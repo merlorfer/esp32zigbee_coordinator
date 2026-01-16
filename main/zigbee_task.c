@@ -11,7 +11,32 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_zigbee_core.h"
+#include "ha/esp_zigbee_ha_standard.h"
 #include <string.h>
+
+/* Zigbee configuration */
+#define INSTALLCODE_POLICY_ENABLE       false      /* enable the install code policy for security */
+#define HA_GATEWAY_ENDPOINT             1          /* esp gateway device endpoint */
+
+/* Zigbee Coordinator configuration macro */
+#define ESP_ZB_ZC_CONFIG()                                                              \
+    {                                                                                   \
+        .esp_zb_role = ESP_ZB_DEVICE_TYPE_COORDINATOR,                                  \
+        .install_code_policy = INSTALLCODE_POLICY_ENABLE,                               \
+        .nwk_cfg.zczr_cfg = {                                                           \
+            .max_children = MAX_DEVICES,                                                \
+        },                                                                              \
+    }
+
+#define ESP_ZB_DEFAULT_RADIO_CONFIG()                           \
+    {                                                           \
+        .radio_mode = ZB_RADIO_MODE_NATIVE,                     \
+    }
+
+#define ESP_ZB_DEFAULT_HOST_CONFIG()                            \
+    {                                                           \
+        .host_connection_mode = ZB_HOST_CONNECTION_MODE_NONE,   \
+    }
 
 static const char *TAG = "ZIGBEE_TASK";
 
@@ -43,7 +68,7 @@ static void bdb_start_top_level_commissioning_cb(uint8_t mode_mask)
     esp_zb_bdb_start_top_level_commissioning(mode_mask);
 }
 
-static void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
+void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 {
     uint32_t *p_sg_p = signal_struct->p_app_signal;
     esp_err_t err_status = signal_struct->esp_err_status;
@@ -99,10 +124,8 @@ static void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         {
             esp_zb_zdo_signal_device_annce_params_t *dev_annce =
                 (esp_zb_zdo_signal_device_annce_params_t *)esp_zb_app_signal_get_params(p_sg_p);
-            ESP_LOGI(TAG, "New device joined: short_addr=0x%04x, ieee_addr=%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
-                     dev_annce->device_short_addr,
-                     dev_annce->ieee_addr[7], dev_annce->ieee_addr[6], dev_annce->ieee_addr[5], dev_annce->ieee_addr[4],
-                     dev_annce->ieee_addr[3], dev_annce->ieee_addr[2], dev_annce->ieee_addr[1], dev_annce->ieee_addr[0]);
+            ESP_LOGI(TAG, "New device joined: short_addr=0x%04x",
+                     dev_annce->device_short_addr);
 
             // Convert IEEE address to uint64_t
             uint64_t ieee_addr = 0;
@@ -127,8 +150,8 @@ static void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         break;
 
     default:
-        ESP_LOGD(TAG, "Unhandled Zigbee signal: %s (0x%x), status: %s",
-                 esp_zb_zdo_signal_to_string(sig_type), sig_type, esp_err_to_name(err_status));
+        ESP_LOGD(TAG, "Unhandled Zigbee signal: %d, status: %s",
+                 sig_type, esp_err_to_name(err_status));
         break;
     }
 }
@@ -141,19 +164,16 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         {
             esp_zb_zcl_cmd_default_resp_message_t *resp =
                 (esp_zb_zcl_cmd_default_resp_message_t *)message;
-            ESP_LOGI(TAG, "Default response: status=%d, from addr=0x%04x",
-                     resp->info.status, resp->info.src_address.u.short_addr);
+            ESP_LOGI(TAG, "Default response: status=%d", resp->info.status);
 
             if (s_pending_cmd.pending) {
                 if (resp->info.status == ESP_ZB_ZCL_STATUS_SUCCESS) {
-                    // Command successful
                     ESP_LOGI(TAG, "Command acknowledged successfully");
                     device_manager_set_state(s_pending_cmd.ieee_addr,
                                            s_pending_cmd.cmd == CMD_ON);
                     device_manager_clear_error(s_pending_cmd.ieee_addr);
                     s_pending_cmd.pending = false;
                 } else {
-                    // Command failed
                     ESP_LOGW(TAG, "Command failed with status %d", resp->info.status);
                     if (s_pending_cmd.retry_count < ZIGBEE_RETRY_COUNT) {
                         s_pending_cmd.retry_count++;
@@ -186,34 +206,13 @@ static void zigbee_task(void *pvParameters)
     ESP_LOGI(TAG, "Zigbee task started");
 
     // Initialize Zigbee stack
-    esp_zb_cfg_t zb_nwk_cfg = {
-        .esp_zb_role = ESP_ZB_DEVICE_TYPE_COORDINATOR,
-        .install_code_policy = false,
-        .nwk_cfg = {
-            .zczr_cfg = {
-                .max_children = MAX_DEVICES,
-            },
-        },
-    };
+    esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZC_CONFIG();
 
     esp_zb_init(&zb_nwk_cfg);
 
-    // Create coordinator endpoint cluster list
-    esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
-
-    // Basic cluster
-    esp_zb_attribute_list_t *basic_cluster = esp_zb_basic_cluster_create(NULL);
-    esp_zb_cluster_list_add_basic_cluster(cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-    // Create endpoint
-    esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
-    esp_zb_endpoint_config_t ep_config = {
-        .endpoint = 1,
-        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        .app_device_id = ESP_ZB_HA_HOME_GATEWAY_DEVICE_ID,
-        .app_device_version = 0,
-    };
-    esp_zb_ep_list_add_ep(ep_list, cluster_list, ep_config);
+    // Create On/Off Switch endpoint using HA standard configuration
+    esp_zb_on_off_switch_cfg_t switch_cfg = ESP_ZB_DEFAULT_ON_OFF_SWITCH_CONFIG();
+    esp_zb_ep_list_t *ep_list = esp_zb_on_off_switch_ep_create(HA_GATEWAY_ENDPOINT, &switch_cfg);
 
     // Register device
     esp_zb_device_register(ep_list);
@@ -226,8 +225,8 @@ static void zigbee_task(void *pvParameters)
 
     ESP_ERROR_CHECK(esp_zb_start(false));
 
-    // Main Zigbee loop
-    esp_zb_main_loop_iteration();
+    // Main Zigbee loop (never returns)
+    esp_zb_stack_main_loop();
 }
 
 static void zigbee_cmd_processor_task(void *pvParameters)
@@ -283,7 +282,6 @@ static void zigbee_cmd_processor_task(void *pvParameters)
             }
 
             if (s_pending_cmd.pending) {
-                // All retries failed
                 device_manager_set_error(msg.ieee_addr, "Nem valaszol");
                 led_set_state(LED_STATE_ERROR);
                 s_pending_cmd.pending = false;
@@ -363,20 +361,17 @@ esp_err_t zigbee_send_on(uint64_t ieee_addr, uint8_t endpoint)
         return ESP_ERR_INVALID_STATE;
     }
 
-    // Set pending command tracking
     s_pending_cmd.ieee_addr = ieee_addr;
     s_pending_cmd.endpoint = endpoint;
     s_pending_cmd.cmd = CMD_ON;
     s_pending_cmd.retry_count = 0;
     s_pending_cmd.pending = true;
 
-    // Convert uint64_t to esp_zb_ieee_addr_t
     esp_zb_ieee_addr_t ieee;
     for (int i = 0; i < 8; i++) {
         ieee[i] = (ieee_addr >> (i * 8)) & 0xFF;
     }
 
-    // Find short address (simplified - in production, use address mapping)
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee);
 
     esp_zb_zcl_on_off_cmd_t cmd = {

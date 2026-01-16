@@ -9,7 +9,15 @@
       "Bash(export PATH=\"$IDF_PATH/tools:$PATH\")",
       "Bash(python:*)",
       "Bash(powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"cd ''D:\\\\Programing\\\\esp-idf\\\\v5.5.1\\\\esp-idf''; .\\\\export.ps1; cd ''D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01''; idf.py set-target esp32c6\")",
-      "Bash(powershell.exe -NoProfile -Command \"\nSet-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process\nRemove-Item Env:MSYSTEM -ErrorAction SilentlyContinue\nRemove-Item Env:MSYS -ErrorAction SilentlyContinue  \nRemove-Item Env:CYGWIN -ErrorAction SilentlyContinue\nRemove-Item Env:TERM -ErrorAction SilentlyContinue\nRemove-Item Env:SHELL -ErrorAction SilentlyContinue\n\ncd ''D:\\\\Programing\\\\esp-idf\\\\v5.5.1\\\\esp-idf''\n.\\\\export.ps1\n\ncd ''D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01''\nidf.py set-target esp32c6\n\")"
+      "Bash(powershell.exe -NoProfile -Command \"\nSet-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process\nRemove-Item Env:MSYSTEM -ErrorAction SilentlyContinue\nRemove-Item Env:MSYS -ErrorAction SilentlyContinue  \nRemove-Item Env:CYGWIN -ErrorAction SilentlyContinue\nRemove-Item Env:TERM -ErrorAction SilentlyContinue\nRemove-Item Env:SHELL -ErrorAction SilentlyContinue\n\ncd ''D:\\\\Programing\\\\esp-idf\\\\v5.5.1\\\\esp-idf''\n.\\\\export.ps1\n\ncd ''D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01''\nidf.py set-target esp32c6\n\")",
+      "Bash(powershell.exe -NoProfile -Command \"\nSet-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process\nRemove-Item Env:MSYSTEM -ErrorAction SilentlyContinue\nRemove-Item Env:MSYS -ErrorAction SilentlyContinue  \nRemove-Item Env:CYGWIN -ErrorAction SilentlyContinue\nRemove-Item Env:TERM -ErrorAction SilentlyContinue\nRemove-Item Env:SHELL -ErrorAction SilentlyContinue\n\ncd ''D:\\\\Programing\\\\esp-idf\\\\v5.5.1\\\\esp-idf''\n.\\\\export.ps1\n\ncd ''D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01''\nidf.py build\n\")",
+      "Bash(cmd.exe /c \"cd /d D:\\\\Programing\\\\esp-idf\\\\v5.5.1\\\\esp-idf && call export.bat && cd /d D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01 && idf.py build\" 2>&1:*)",
+      "Bash(cmd.exe /c \"set MSYSTEM= && set MSYS= && set CYGWIN= && set TERM= && set SHELL= && cd /d D:\\\\Programing\\\\esp-idf\\\\v5.5.1\\\\esp-idf && call export.bat && cd /d D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01 && idf.py build 2>&1\")",
+      "Bash(cmd.exe /c \"D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01\\\\build.bat\")",
+      "Bash(cmd.exe //c \"D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01\\\\build.bat\")",
+      "Bash(ls:*)",
+      "Bash(cmd.exe //c \"dir D:\\\\Programing\\\\esp-idf\\\\v5.5.1\\\\esp-idf\\\\export*\")",
+      "Bash(cmd.exe //c \"D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01\\\\flash.bat\")"
     ]
   }
 }

@@ -5,6 +5,7 @@
 
 #include "device_manager.h"
 #include "nvs_manager.h"
+#include "nvs.h"
 #include "esp_log.h"
 #include <string.h>
 #include <time.h>
