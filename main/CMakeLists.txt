@@ -1,0 +1,28 @@
+# main component CMakeLists.txt
+# ESP32-C6 Zigbee Gateway main application
+
+idf_component_register(
+    SRCS "main.c"
+         "wifi_task.c"
+         "zigbee_task.c"
+         "scheduler_task.c"
+         "button_task.c"
+         "led_task.c"
+         "nvs_manager.c"
+         "device_manager.c"
+    INCLUDE_DIRS "."
+    REQUIRES nvs_flash
+             esp_wifi
+             esp_http_server
+             esp_netif
+             esp_event
+             esp_timer
+             spiffs
+             cjson
+             int_drivers
+             esp_zigbee_lib
+             driver
+)
+
+# Embed SPIFFS partition
+spiffs_create_partition_image(storage ../web FLASH_IN_PROJECT)

@@ -1,0 +1,255 @@
+/**
+ * @file scheduler_task.c
+ * @brief Automation scheduler task implementation
+ */
+
+#include "scheduler_task.h"
+#include "device_manager.h"
+#include "wifi_task.h"
+#include "led_task.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/timers.h"
+#include <time.h>
+
+static const char *TAG = "SCHEDULER_TASK";
+
+// External declarations
+extern EventGroupHandle_t g_event_group;
+extern QueueHandle_t g_cmd_queue;
+
+static TaskHandle_t s_scheduler_task_handle = NULL;
+static bool s_scheduler_active = false;
+static uint32_t s_delay_cycle_start = 0;
+
+// ============================================================================
+// Time Comparison Helpers
+// ============================================================================
+
+static bool time_matches(time_point_t *tp, struct tm *current_time)
+{
+    return (tp->hour == current_time->tm_hour && tp->minute == current_time->tm_min);
+}
+
+static uint32_t get_minutes_since_cycle_start(void)
+{
+    if (s_delay_cycle_start == 0) {
+        return 0;
+    }
+
+    time_t now = time(NULL);
+    uint32_t elapsed_seconds = (uint32_t)(now - s_delay_cycle_start);
+    return elapsed_seconds / 60;
+}
+
+// ============================================================================
+// Fixed Time Mode Processing
+// ============================================================================
+
+static void process_fixed_time_mode(device_config_t *dev, struct tm *current_time)
+{
+    if (!dev->enabled) {
+        return;
+    }
+
+    for (int i = 0; i < dev->time_pair_count; i++) {
+        time_pair_t *pair = &dev->time_pairs[i];
+
+        // Check ON time
+        if (time_matches(&pair->on_time, current_time)) {
+            if (!dev->current_state) {
+                ESP_LOGI(TAG, "Fixed time ON triggered for device 0x%016llX",
+                         (unsigned long long)dev->ieee_addr);
+
+                cmd_queue_msg_t msg = {
+                    .ieee_addr = dev->ieee_addr,
+                    .endpoint = dev->endpoint,
+                    .cmd = CMD_ON
+                };
+                xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+            }
+        }
+
+        // Check OFF time
+        if (time_matches(&pair->off_time, current_time)) {
+            if (dev->current_state) {
+                ESP_LOGI(TAG, "Fixed time OFF triggered for device 0x%016llX",
+                         (unsigned long long)dev->ieee_addr);
+
+                cmd_queue_msg_t msg = {
+                    .ieee_addr = dev->ieee_addr,
+                    .endpoint = dev->endpoint,
+                    .cmd = CMD_OFF
+                };
+                xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Delay Mode Processing
+// ============================================================================
+
+static void process_delay_mode(device_config_t *dev)
+{
+    if (!dev->enabled || s_delay_cycle_start == 0) {
+        return;
+    }
+
+    uint32_t minutes_elapsed = get_minutes_since_cycle_start();
+    uint32_t cycle_length = dev->delay_on_minutes + dev->delay_duration_minutes;
+
+    if (cycle_length == 0) {
+        return;
+    }
+
+    // Calculate position within current cycle
+    uint32_t position_in_cycle = minutes_elapsed % cycle_length;
+
+    // Determine expected state
+    // 0 to delay_on_minutes-1: OFF (waiting)
+    // delay_on_minutes to cycle_length-1: ON (active)
+    bool expected_state = (position_in_cycle >= dev->delay_on_minutes);
+
+    // Check if state change is needed
+    if (expected_state != dev->current_state) {
+        ESP_LOGI(TAG, "Delay mode %s triggered for device 0x%016llX (cycle pos: %lu/%lu)",
+                 expected_state ? "ON" : "OFF",
+                 (unsigned long long)dev->ieee_addr,
+                 (unsigned long)position_in_cycle,
+                 (unsigned long)cycle_length);
+
+        cmd_queue_msg_t msg = {
+            .ieee_addr = dev->ieee_addr,
+            .endpoint = dev->endpoint,
+            .cmd = expected_state ? CMD_ON : CMD_OFF
+        };
+        xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+    }
+}
+
+// ============================================================================
+// Scheduler Task
+// ============================================================================
+
+static void scheduler_task(void *pvParameters)
+{
+    struct tm current_time;
+    uint8_t last_minute = 255;
+
+    ESP_LOGI(TAG, "Scheduler task started");
+
+    for (;;) {
+        // Wait for scheduler to be active and RTC to be initialized
+        EventBits_t bits = xEventGroupWaitBits(
+            g_event_group,
+            EVENT_ZIGBEE_MODE_BIT | EVENT_RTC_INIT_BIT,
+            pdFALSE,
+            pdTRUE,
+            pdMS_TO_TICKS(1000)
+        );
+
+        if (!(bits & EVENT_ZIGBEE_MODE_BIT) || !(bits & EVENT_RTC_INIT_BIT)) {
+            continue;
+        }
+
+        if (!s_scheduler_active) {
+            continue;
+        }
+
+        // Get current time
+        time_t now = time(NULL);
+        localtime_r(&now, &current_time);
+
+        // Process once per minute for fixed time mode
+        if (current_time.tm_min != last_minute) {
+            last_minute = current_time.tm_min;
+
+            ESP_LOGD(TAG, "Scheduler tick: %02d:%02d:%02d",
+                     current_time.tm_hour, current_time.tm_min, current_time.tm_sec);
+
+            // Process each device
+            uint8_t count = device_manager_get_count();
+            for (uint8_t i = 0; i < count; i++) {
+                device_config_t dev;
+                if (device_manager_get_by_index(i, &dev) != ESP_OK) {
+                    continue;
+                }
+
+                if (dev.mode == MODE_FIXED_TIME) {
+                    process_fixed_time_mode(&dev, &current_time);
+                }
+            }
+        }
+
+        // Process delay mode more frequently (every 10 seconds)
+        uint8_t count = device_manager_get_count();
+        for (uint8_t i = 0; i < count; i++) {
+            device_config_t dev;
+            if (device_manager_get_by_index(i, &dev) != ESP_OK) {
+                continue;
+            }
+
+            if (dev.mode == MODE_DELAY) {
+                process_delay_mode(&dev);
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10000));  // 10 second interval for delay mode
+    }
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+esp_err_t scheduler_task_init(void)
+{
+    ESP_LOGI(TAG, "Scheduler task initialized");
+    return ESP_OK;
+}
+
+esp_err_t scheduler_task_start(void)
+{
+    BaseType_t ret = xTaskCreate(
+        scheduler_task,
+        "scheduler_task",
+        TASK_STACK_SCHEDULER,
+        NULL,
+        TASK_PRIORITY_SCHEDULER,
+        &s_scheduler_task_handle
+    );
+
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create scheduler task");
+        return ESP_FAIL;
+    }
+
+    s_scheduler_active = true;
+    ESP_LOGI(TAG, "Scheduler task started");
+    return ESP_OK;
+}
+
+void scheduler_task_stop(void)
+{
+    s_scheduler_active = false;
+    ESP_LOGI(TAG, "Scheduler task stopped");
+}
+
+void scheduler_task_resume(void)
+{
+    s_scheduler_active = true;
+
+    // Reset delay cycle start time
+    s_delay_cycle_start = (uint32_t)time(NULL);
+
+    ESP_LOGI(TAG, "Scheduler task resumed, delay cycle reset");
+}
+
+void scheduler_reset_delay_cycles(void)
+{
+    s_delay_cycle_start = (uint32_t)time(NULL);
+    ESP_LOGI(TAG, "Delay cycles reset at timestamp %lu", (unsigned long)s_delay_cycle_start);
+}

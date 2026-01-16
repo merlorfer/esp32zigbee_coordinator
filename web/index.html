@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-C6 Zigbee Gateway</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Zigbee Gateway</h1>
+            <div class="status-bar">
+                <span id="status-indicator" class="status-dot"></span>
+                <span id="status-text">Csatlakozas...</span>
+            </div>
+        </header>
+
+        <main>
+            <!-- System Clock Section -->
+            <section class="card">
+                <h2>Rendszerora</h2>
+                <div class="clock-display">
+                    <span id="current-time">--:--:--</span>
+                    <span id="current-date">----.--.--</span>
+                </div>
+                <div class="rtc-status" id="rtc-status"></div>
+                <div class="form-group">
+                    <label for="datetime-input">Ido beallitasa:</label>
+                    <input type="datetime-local" id="datetime-input">
+                    <button onclick="setRtc()" class="btn btn-primary">Ora beallitasa</button>
+                </div>
+            </section>
+
+            <!-- Zigbee Devices Section -->
+            <section class="card">
+                <h2>Zigbee Eszkozok</h2>
+                <div class="permit-join-section">
+                    <button onclick="permitJoin()" class="btn btn-secondary" id="permit-join-btn">
+                        Uj eszkoz hozzaadasa
+                    </button>
+                    <span id="permit-join-timer" class="timer hidden"></span>
+                </div>
+                <div id="device-list" class="device-list">
+                    <p class="no-devices">Nincs csatlakozott eszkoz</p>
+                </div>
+            </section>
+
+            <!-- Global Settings Section -->
+            <section class="card">
+                <h2>Globalis Beallitasok</h2>
+                <div class="form-group">
+                    <label>Wi-Fi AP bekapcsolasakor:</label>
+                    <div class="radio-group">
+                        <label class="radio-label">
+                            <input type="radio" name="wifi-behavior" value="maintain" id="wifi-maintain">
+                            <span>Allapot megtartasa</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="wifi-behavior" value="poweroff" id="wifi-poweroff" checked>
+                            <span>Osszes kikapcsolasa</span>
+                        </label>
+                    </div>
+                </div>
+                <button onclick="saveGlobalConfig()" class="btn btn-primary">Beallitasok mentese</button>
+            </section>
+
+            <!-- Start Automation Section -->
+            <section class="card action-card">
+                <button onclick="startAutomation()" class="btn btn-success btn-large">
+                    Automatizacio inditasa
+                </button>
+                <p class="hint">A Wi-Fi AP leall es az automatizacio aktivalodik</p>
+            </section>
+        </main>
+
+        <!-- Device Config Modal -->
+        <div id="device-modal" class="modal hidden">
+            <div class="modal-content">
+                <span class="close" onclick="closeModal()">&times;</span>
+                <h2>Eszkoz beallitasa</h2>
+                <form id="device-form">
+                    <input type="hidden" id="edit-ieee-addr">
+
+                    <div class="form-group">
+                        <label for="edit-name">Egyedi nev:</label>
+                        <input type="text" id="edit-name" maxlength="31">
+                    </div>
+
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="edit-enabled">
+                            Automatizacio engedelyezve
+                        </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="edit-mode">Mukodesi mod:</label>
+                        <select id="edit-mode" onchange="onModeChange()">
+                            <option value="fixed_time">Fix idopont</option>
+                            <option value="delay">Delay (Kesleltetes)</option>
+                        </select>
+                    </div>
+
+                    <!-- Fixed Time Mode Settings -->
+                    <div id="fixed-time-settings">
+                        <div id="time-pairs-container"></div>
+                        <button type="button" onclick="addTimePair()" class="btn btn-secondary btn-small">
+                            + Uj idopont hozzaadasa
+                        </button>
+                    </div>
+
+                    <!-- Delay Mode Settings -->
+                    <div id="delay-settings" class="hidden">
+                        <div class="form-group">
+                            <label for="edit-delay-on">Kesleltetes (perc):</label>
+                            <input type="number" id="edit-delay-on" min="0" max="1440" value="30">
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-delay-duration">Idotartam (perc):</label>
+                            <input type="number" id="edit-delay-duration" min="1" max="1440" value="120">
+                        </div>
+                    </div>
+
+                    <div class="modal-actions">
+                        <button type="button" onclick="saveDeviceConfig()" class="btn btn-primary">Mentes</button>
+                        <button type="button" onclick="closeModal()" class="btn btn-secondary">Megse</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Toast Notification -->
+        <div id="toast" class="toast hidden"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
