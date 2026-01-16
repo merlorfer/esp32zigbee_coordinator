@@ -18,10 +18,10 @@ idf_component_register(
              esp_event
              esp_timer
              spiffs
-             cjson
+             json
              int_drivers
-             esp_zigbee_lib
              driver
+    PRIV_REQUIRES esp_zigbee_lib
 )
 
 # Embed SPIFFS partition
