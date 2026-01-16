@@ -20,15 +20,30 @@
             <!-- System Clock Section -->
             <section class="card">
                 <h2>Rendszerora</h2>
-                <div class="clock-display">
-                    <span id="current-time">--:--:--</span>
-                    <span id="current-date">----.--.--</span>
+                <div class="clock-container">
+                    <div class="clock-column">
+                        <div class="clock-label">ESP ido:</div>
+                        <div class="clock-display">
+                            <span id="esp-time">--:--:--</span>
+                            <span id="esp-date">----.--.--</span>
+                        </div>
+                    </div>
+                    <div class="clock-column">
+                        <div class="clock-label">Host ido:</div>
+                        <div class="clock-display host-clock">
+                            <span id="current-time">--:--:--</span>
+                            <span id="current-date">----.--.--</span>
+                        </div>
+                    </div>
                 </div>
                 <div class="rtc-status" id="rtc-status"></div>
-                <div class="form-group">
-                    <label for="datetime-input">Ido beallitasa:</label>
+                <div class="rtc-actions">
+                    <button onclick="syncRtc()" class="btn btn-success">Szinkronizalas most</button>
+                </div>
+                <div class="form-group manual-rtc">
+                    <label for="datetime-input">Manualis beallitas:</label>
                     <input type="datetime-local" id="datetime-input">
-                    <button onclick="setRtc()" class="btn btn-primary">Ora beallitasa</button>
+                    <button onclick="setRtc()" class="btn btn-secondary btn-small">Beallitas</button>
                 </div>
             </section>
 
@@ -67,10 +82,10 @@
 
             <!-- Start Automation Section -->
             <section class="card action-card">
-                <button onclick="startAutomation()" class="btn btn-success btn-large">
+                <button onclick="startAutomation()" class="btn btn-success btn-large" id="automation-btn">
                     Automatizacio inditasa
                 </button>
-                <p class="hint">A Wi-Fi AP leall es az automatizacio aktivalodik</p>
+                <p class="hint" id="automation-hint">A Wi-Fi AP leall es az automatizacio aktivalodik</p>
             </section>
         </main>
 

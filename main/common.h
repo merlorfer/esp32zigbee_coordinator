@@ -30,7 +30,7 @@ extern "C" {
 
 #define WIFI_SSID               "ESP32C6_AI_Test"
 #define WIFI_PASSWORD           "12345678"
-#define WIFI_CHANNEL            1
+#define WIFI_CHANNEL            6
 #define WIFI_MAX_CONNECTIONS    4
 #define WIFI_AP_IP              "192.168.4.1"
 

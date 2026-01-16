@@ -8,6 +8,9 @@ let devices = [];
 let permitJoinTimer = null;
 let clockInterval = null;
 let currentEditDevice = null;
+let espTimeOffset = 0;  // Offset between ESP RTC and local time
+let espTimeInitialized = false;
+let zigbeeActive = false;
 
 // ============================================================================
 // Initialization
@@ -35,10 +38,21 @@ function startClock() {
 
 function updateClock() {
     const now = new Date();
+
+    // Host time
     document.getElementById('current-time').textContent =
         now.toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     document.getElementById('current-date').textContent =
         now.toLocaleDateString('hu-HU', { year: 'numeric', month: '2-digit', day: '2-digit' });
+
+    // ESP time (calculated from offset)
+    if (espTimeInitialized) {
+        const espTime = new Date(now.getTime() + espTimeOffset);
+        document.getElementById('esp-time').textContent =
+            espTime.toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        document.getElementById('esp-date').textContent =
+            espTime.toLocaleDateString('hu-HU', { year: 'numeric', month: '2-digit', day: '2-digit' });
+    }
 }
 
 // ============================================================================
@@ -56,6 +70,17 @@ async function loadStatus() {
 
         statusDot.className = 'status-dot connected';
         statusText.textContent = 'Csatlakozva';
+
+        // Update ESP time offset
+        if (data.current_time) {
+            const espDate = new Date(data.current_time.replace(' ', 'T'));
+            const now = new Date();
+            espTimeOffset = espDate.getTime() - now.getTime();
+            espTimeInitialized = true;
+        }
+
+        // Update Zigbee status
+        zigbeeActive = data.zigbee_active || false;
 
         if (data.rtc_initialized) {
             rtcStatus.className = 'rtc-status ok';
@@ -90,6 +115,9 @@ async function setRtc() {
         const data = await response.json();
         if (data.success) {
             showToast('Ora sikeresen beallitva!');
+            // Reset ESP time to show immediately
+            espTimeOffset = 0;
+            espTimeInitialized = false;
             loadStatus();
         } else {
             showToast(data.message || 'Hiba tortent', true);
@@ -100,18 +128,75 @@ async function setRtc() {
     }
 }
 
+async function syncRtc() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hour = String(now.getHours()).padStart(2, '0');
+    const minute = String(now.getMinutes()).padStart(2, '0');
+    const second = String(now.getSeconds()).padStart(2, '0');
+
+    const datetime = `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+
+    try {
+        const response = await fetch('/api/rtc/set', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ datetime: datetime })
+        });
+
+        const data = await response.json();
+        if (data.success) {
+            showToast('Ora szinkronizalva!');
+            espTimeOffset = 0;  // After sync, offset should be ~0
+            espTimeInitialized = true;
+            loadStatus();
+        } else {
+            showToast(data.message || 'Hiba tortent', true);
+        }
+    } catch (error) {
+        console.error('RTC sync error:', error);
+        showToast('Kapcsolati hiba', true);
+    }
+}
+
 async function loadDevices() {
     try {
         const response = await fetch('/api/devices');
         const data = await response.json();
         devices = data.devices || [];
         renderDevices();
+        updateAutomationButton();
     } catch (error) {
         console.error('Device load error:', error);
     }
 }
 
+function updateAutomationButton() {
+    const btn = document.getElementById('automation-btn');
+    const hint = document.getElementById('automation-hint');
+
+    if (devices.length === 0) {
+        btn.disabled = true;
+        btn.classList.add('btn-disabled');
+        hint.textContent = 'Nincs csatlakozott eszkoz - nem indithato az automatizacio';
+        hint.classList.add('warning');
+    } else {
+        btn.disabled = false;
+        btn.classList.remove('btn-disabled');
+        hint.textContent = 'A Wi-Fi AP leall es az automatizacio aktivalodik';
+        hint.classList.remove('warning');
+    }
+}
+
 async function permitJoin() {
+    // Warn user if Zigbee is not active
+    if (!zigbeeActive) {
+        showToast('Figyelmeztetes: Zigbee mod nem aktiv! Elobb valtson Zigbee modba a gomb megnyomasaval.', true);
+        return;
+    }
+
     try {
         const response = await fetch('/api/zigbee/permit-join', {
             method: 'POST',
@@ -256,6 +341,12 @@ async function saveGlobalConfig() {
 }
 
 async function startAutomation() {
+    // Check if there are devices
+    if (devices.length === 0) {
+        showToast('Nincs csatlakozott eszkoz - nem indithato az automatizacio!', true);
+        return;
+    }
+
     if (!confirm('A Wi-Fi AP leall es az automatizacio aktivalodik. Folytatja?')) {
         return;
     }

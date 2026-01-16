@@ -88,27 +88,70 @@ header h1 {
     border-bottom: 2px solid var(--primary-color);
 }
 
-/* Clock Display */
-.clock-display {
-    text-align: center;
-    padding: 20px;
-    background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
-    border-radius: 8px;
-    color: white;
+/* Clock Container */
+.clock-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
     margin-bottom: 15px;
 }
 
-#current-time {
+.clock-column {
+    text-align: center;
+}
+
+.clock-label {
+    font-weight: 500;
+    margin-bottom: 8px;
+    color: var(--text-light);
+}
+
+/* Clock Display */
+.clock-display {
+    text-align: center;
+    padding: 15px;
+    background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
+    border-radius: 8px;
+    color: white;
+}
+
+.clock-display.host-clock {
+    background: linear-gradient(135deg, #6c757d, #5a6268);
+}
+
+#current-time, #esp-time {
     display: block;
-    font-size: 2.5rem;
+    font-size: 1.8rem;
     font-weight: bold;
     font-family: monospace;
 }
 
-#current-date {
+#current-date, #esp-date {
     display: block;
-    font-size: 1rem;
+    font-size: 0.9rem;
     opacity: 0.9;
+}
+
+/* RTC Actions */
+.rtc-actions {
+    text-align: center;
+    margin-bottom: 15px;
+}
+
+.manual-rtc {
+    border-top: 1px solid var(--border-color);
+    padding-top: 15px;
+    margin-top: 10px;
+}
+
+.manual-rtc label {
+    display: inline-block;
+    margin-right: 10px;
+}
+
+.manual-rtc input {
+    width: auto;
+    margin-right: 10px;
 }
 
 .rtc-status {
@@ -222,6 +265,16 @@ select:focus {
     width: 100%;
     padding: 15px 30px;
     font-size: 1.2rem;
+}
+
+.btn-disabled, .btn:disabled {
+    background-color: #cccccc !important;
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.btn-disabled:hover, .btn:disabled:hover {
+    transform: none;
 }
 
 /* Radio buttons */
@@ -481,6 +534,11 @@ select:focus {
     font-size: 0.875rem;
 }
 
+.hint.warning {
+    color: var(--warning-color);
+    font-weight: 500;
+}
+
 /* Utility */
 .hidden {
     display: none !important;
@@ -496,6 +554,29 @@ select:focus {
         flex-direction: column;
         gap: 10px;
         text-align: center;
+    }
+
+    .clock-container {
+        grid-template-columns: 1fr;
+    }
+
+    #current-time, #esp-time {
+        font-size: 1.5rem;
+    }
+
+    .manual-rtc {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .manual-rtc label {
+        margin-right: 0;
+    }
+
+    .manual-rtc input {
+        width: 100%;
+        margin-right: 0;
     }
 
     .device-item {

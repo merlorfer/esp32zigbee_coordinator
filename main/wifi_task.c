@@ -704,6 +704,7 @@ esp_err_t wifi_task_init(void)
 
 esp_err_t wifi_task_start(void)
 {
+    // Simple Wi-Fi AP configuration - working on ESP32-C6
     wifi_config_t wifi_config = {
         .ap = {
             .ssid = WIFI_SSID,
@@ -712,15 +713,25 @@ esp_err_t wifi_task_start(void)
             .password = WIFI_PASSWORD,
             .max_connection = WIFI_MAX_CONNECTIONS,
             .authmode = WIFI_AUTH_WPA2_PSK,
-            .pmf_cfg = {
-                .required = false,
-            },
+            .ssid_hidden = 0,
+            .beacon_interval = 100,
         },
     };
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    // Set maximum TX power AFTER wifi_start (20 dBm = 80 in quarter dBm units)
+    esp_err_t ret = esp_wifi_set_max_tx_power(80);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to set TX power: %s", esp_err_to_name(ret));
+    }
+
+    // Log actual TX power
+    int8_t tx_power;
+    esp_wifi_get_max_tx_power(&tx_power);
+    ESP_LOGI(TAG, "Wi-Fi TX power: %d (quarter dBm)", tx_power);
 
     ESP_LOGI(TAG, "Wi-Fi AP started. SSID:%s password:%s", WIFI_SSID, WIFI_PASSWORD);
 

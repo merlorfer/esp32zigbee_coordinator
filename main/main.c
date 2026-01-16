@@ -40,6 +40,8 @@ static bool s_wifi_mode = true;  // Start in Wi-Fi mode
 // Button Callback
 // ============================================================================
 
+static bool s_zigbee_started = false;  // Track if Zigbee task was ever started
+
 static void on_button_press(void)
 {
     ESP_LOGI(TAG, "Button pressed - toggling mode");
@@ -48,7 +50,15 @@ static void on_button_press(void)
         // Switch to Zigbee mode
         ESP_LOGI(TAG, "Switching to Zigbee automation mode");
         wifi_task_stop();
-        scheduler_task_resume();
+
+        // Start Zigbee task if not already started
+        if (!s_zigbee_started) {
+            ESP_LOGI(TAG, "Starting Zigbee task for the first time");
+            zigbee_task_start();
+            s_zigbee_started = true;
+        }
+
+        scheduler_task_start();
         s_wifi_mode = false;
 
         xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
@@ -62,6 +72,8 @@ static void on_button_press(void)
         }
     } else {
         // Switch to Wi-Fi mode
+        // NOTE: On ESP32-C6, we can't easily stop Zigbee once started
+        // Wi-Fi may have reduced performance with Zigbee running
         ESP_LOGI(TAG, "Switching to Wi-Fi configuration mode");
         scheduler_task_stop();
         wifi_task_start();
@@ -151,21 +163,16 @@ void app_main(void)
     // Initialize Wi-Fi task
     ESP_ERROR_CHECK(wifi_task_init());
 
-    // Initialize Zigbee task
+    // Initialize Zigbee task (but don't start yet - radio shared with Wi-Fi)
     ESP_ERROR_CHECK(zigbee_task_init());
 
     // Initialize scheduler task
     ESP_ERROR_CHECK(scheduler_task_init());
 
-    // Start Zigbee (always running per spec)
-    ESP_ERROR_CHECK(zigbee_task_start());
-
-    // Start scheduler
-    ESP_ERROR_CHECK(scheduler_task_start());
-    scheduler_task_stop();  // Initially stopped until Wi-Fi AP is turned off
-
     // Start in Wi-Fi AP mode (as per user preference)
-    ESP_LOGI(TAG, "Starting in Wi-Fi AP mode");
+    // NOTE: Zigbee task NOT started here - Wi-Fi and Zigbee share the same radio on ESP32-C6
+    // Zigbee will start when user switches to Zigbee mode via button press
+    ESP_LOGI(TAG, "Starting in Wi-Fi AP mode (Zigbee will start when mode switched)");
     ESP_ERROR_CHECK(wifi_task_start());
     s_wifi_mode = true;
 
