@@ -13,7 +13,32 @@
 #include "esp_zigbee_core.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "zcl/esp_zigbee_zcl_common.h"
+#include "esp_ieee802154.h"
 #include <string.h>
+#include <inttypes.h>
+
+/* Helper function to format IEEE address as hex string */
+static void format_ieee_addr(char *buf, size_t buf_size, const uint8_t *ieee_addr)
+{
+    snprintf(buf, buf_size, "%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
+             ieee_addr[7], ieee_addr[6], ieee_addr[5], ieee_addr[4],
+             ieee_addr[3], ieee_addr[2], ieee_addr[1], ieee_addr[0]);
+}
+
+/* Helper function to convert IEEE address bytes to uint64 */
+static uint64_t ieee_to_uint64(const uint8_t *ieee_addr)
+{
+    uint64_t result;
+    // Use memcpy to avoid byte order issues
+    memcpy(&result, ieee_addr, sizeof(uint64_t));
+    return result;
+}
+
+/* Helper function to convert uint64 to IEEE address bytes */
+static void uint64_to_ieee(uint64_t addr, uint8_t *ieee_addr)
+{
+    memcpy(ieee_addr, &addr, sizeof(uint64_t));
+}
 
 /* Zigbee configuration */
 #define INSTALLCODE_POLICY_ENABLE       false      /* enable the install code policy for security */
@@ -139,18 +164,42 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         {
             esp_zb_zdo_signal_device_annce_params_t *dev_annce =
                 (esp_zb_zdo_signal_device_annce_params_t *)esp_zb_app_signal_get_params(p_sg_p);
-            ESP_LOGI(TAG, "New device joined: short_addr=0x%04x",
-                     dev_annce->device_short_addr);
 
-            // Convert IEEE address to uint64_t
-            uint64_t ieee_addr = 0;
-            for (int i = 0; i < 8; i++) {
-                ieee_addr |= ((uint64_t)dev_annce->ieee_addr[i]) << (i * 8);
+            if (dev_annce == NULL) {
+                ESP_LOGE(TAG, "Device announce params is NULL!");
+                break;
+            }
+
+            ESP_LOGI(TAG, "New device joined: short_addr=0x%04x", dev_annce->device_short_addr);
+
+            // Format and log IEEE address
+            char ieee_str[24];
+            format_ieee_addr(ieee_str, sizeof(ieee_str), dev_annce->ieee_addr);
+            ESP_LOGI(TAG, "IEEE addr: %s", ieee_str);
+
+            // Convert IEEE address to uint64_t using memcpy
+            uint64_t ieee_addr = ieee_to_uint64(dev_annce->ieee_addr);
+
+            // Debug: verify the conversion
+            ESP_LOGI(TAG, "IEEE addr uint64 bytes: %02X %02X %02X %02X %02X %02X %02X %02X",
+                     (uint8_t)(ieee_addr & 0xFF),
+                     (uint8_t)((ieee_addr >> 8) & 0xFF),
+                     (uint8_t)((ieee_addr >> 16) & 0xFF),
+                     (uint8_t)((ieee_addr >> 24) & 0xFF),
+                     (uint8_t)((ieee_addr >> 32) & 0xFF),
+                     (uint8_t)((ieee_addr >> 40) & 0xFF),
+                     (uint8_t)((ieee_addr >> 48) & 0xFF),
+                     (uint8_t)((ieee_addr >> 56) & 0xFF));
+
+            // Validate IEEE address - must not be 0
+            if (ieee_addr == 0) {
+                ESP_LOGW(TAG, "Invalid IEEE address (0), skipping device");
+                break;
             }
 
             // Check if device already exists
             if (device_manager_exists(ieee_addr)) {
-                ESP_LOGI(TAG, "Device 0x%016llX already registered", (unsigned long long)ieee_addr);
+                ESP_LOGI(TAG, "Device %s already registered", ieee_str);
                 break;
             }
 
@@ -159,7 +208,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             s_pending_discovery.ieee_addr = ieee_addr;
             s_pending_discovery.pending = true;
 
-            ESP_LOGI(TAG, "Starting device discovery for 0x%016llX", (unsigned long long)ieee_addr);
+            ESP_LOGI(TAG, "Starting device discovery for %s", ieee_str);
             request_active_endpoints(dev_annce->device_short_addr);
         }
         break;
@@ -270,8 +319,8 @@ static void zigbee_cmd_processor_task(void *pvParameters)
                 continue;
             }
 
-            ESP_LOGI(TAG, "Processing command: addr=0x%016llX, ep=%d, cmd=%d",
-                     (unsigned long long)msg.ieee_addr, msg.endpoint, msg.cmd);
+            ESP_LOGI(TAG, "Processing command: addr=0x%016" PRIX64 ", ep=%d, cmd=%d",
+                     msg.ieee_addr, msg.endpoint, msg.cmd);
 
             switch (msg.cmd) {
             case CMD_ON:
@@ -411,7 +460,7 @@ esp_err_t zigbee_send_on(uint64_t ieee_addr, uint8_t endpoint)
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
-    ESP_LOGI(TAG, "ON command sent to 0x%016llX", (unsigned long long)ieee_addr);
+    ESP_LOGI(TAG, "ON command sent to 0x%016" PRIX64, ieee_addr);
 
     return ESP_OK;
 }
@@ -446,7 +495,7 @@ esp_err_t zigbee_send_off(uint64_t ieee_addr, uint8_t endpoint)
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
-    ESP_LOGI(TAG, "OFF command sent to 0x%016llX", (unsigned long long)ieee_addr);
+    ESP_LOGI(TAG, "OFF command sent to 0x%016" PRIX64, ieee_addr);
 
     return ESP_OK;
 }
@@ -481,7 +530,7 @@ esp_err_t zigbee_send_toggle(uint64_t ieee_addr, uint8_t endpoint)
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
-    ESP_LOGI(TAG, "TOGGLE command sent to 0x%016llX", (unsigned long long)ieee_addr);
+    ESP_LOGI(TAG, "TOGGLE command sent to 0x%016" PRIX64, ieee_addr);
 
     return ESP_OK;
 }
@@ -489,6 +538,69 @@ esp_err_t zigbee_send_toggle(uint64_t ieee_addr, uint8_t endpoint)
 bool zigbee_is_running(void)
 {
     return s_zigbee_running;
+}
+
+esp_err_t zigbee_task_stop(void)
+{
+    ESP_LOGI(TAG, "Stopping Zigbee radio operations");
+
+    if (!s_zigbee_running) {
+        ESP_LOGW(TAG, "Zigbee already stopped");
+        return ESP_OK;
+    }
+
+    // Mark Zigbee as not running - this prevents command processing
+    s_zigbee_running = false;
+
+    // Clear any pending discovery
+    s_pending_discovery.pending = false;
+
+    // Clear any pending command
+    s_pending_cmd.pending = false;
+
+    // Clear event bits to signal Zigbee is inactive
+    if (g_event_group != NULL) {
+        xEventGroupClearBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
+    }
+
+    // Disable IEEE 802.15.4 radio to free up for Wi-Fi
+    // This should help with the radio sharing on ESP32-C6
+    esp_err_t ret = esp_ieee802154_disable();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "IEEE 802.15.4 radio disabled");
+    } else {
+        ESP_LOGW(TAG, "Failed to disable IEEE 802.15.4 radio: %s", esp_err_to_name(ret));
+    }
+
+    ESP_LOGI(TAG, "Zigbee radio stopped - Wi-Fi can now use the radio");
+
+    return ESP_OK;
+}
+
+esp_err_t zigbee_task_resume(void)
+{
+    ESP_LOGI(TAG, "Resuming Zigbee radio operations");
+
+    // Re-enable IEEE 802.15.4 radio
+    esp_err_t ret = esp_ieee802154_enable();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "IEEE 802.15.4 radio enabled");
+    } else {
+        ESP_LOGW(TAG, "Failed to enable IEEE 802.15.4 radio: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Mark Zigbee as running
+    s_zigbee_running = true;
+
+    // Set event bits
+    if (g_event_group != NULL) {
+        xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
+    }
+
+    ESP_LOGI(TAG, "Zigbee radio resumed");
+
+    return ESP_OK;
 }
 
 // ============================================================================
@@ -569,8 +681,11 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
 
     if (has_on_off && s_pending_discovery.pending) {
         // Found an endpoint with ON_OFF cluster - add device
-        ESP_LOGI(TAG, "Adding device 0x%016llX with endpoint %d",
-                 (unsigned long long)s_pending_discovery.ieee_addr, endpoint);
+        uint8_t ieee_bytes[8];
+        uint64_to_ieee(s_pending_discovery.ieee_addr, ieee_bytes);
+        char ieee_str[24];
+        format_ieee_addr(ieee_str, sizeof(ieee_str), ieee_bytes);
+        ESP_LOGI(TAG, "Adding device %s with endpoint %d", ieee_str, endpoint);
 
         device_manager_add(s_pending_discovery.ieee_addr, endpoint, NULL, NULL);
         s_pending_discovery.pending = false;

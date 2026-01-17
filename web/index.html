@@ -50,12 +50,7 @@
             <!-- Zigbee Devices Section -->
             <section class="card">
                 <h2>Zigbee Eszkozok</h2>
-                <div class="permit-join-section">
-                    <button onclick="permitJoin()" class="btn btn-secondary" id="permit-join-btn">
-                        Uj eszkoz hozzaadasa
-                    </button>
-                    <span id="permit-join-timer" class="timer hidden"></span>
-                </div>
+                <p class="hint">Eszkoz hozzaadasahoz nyomja meg hosszan a gombot az ESP-n (Zigbee modban)</p>
                 <div id="device-list" class="device-list">
                     <p class="no-devices">Nincs csatlakozott eszkoz</p>
                 </div>
@@ -91,6 +86,9 @@
                     </ul>
                 </div>
                 <p class="hint">Az automatizacio elinditasahoz nyomd meg roviden a gombot az ESP-n</p>
+                <hr style="margin: 15px 0; border-color: var(--border-color);">
+                <button onclick="factoryReset()" class="btn btn-danger">Gyari alaphelyzetbe allitas</button>
+                <p class="hint warning">Torli az osszes eszkozt es beallitast!</p>
             </section>
         </main>
 

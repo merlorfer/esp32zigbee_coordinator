@@ -570,6 +570,44 @@ static esp_err_t api_global_config_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t api_factory_reset_handler(httpd_req_t *req)
+{
+    ESP_LOGW(TAG, "Factory reset requested!");
+
+    // Clear all devices
+    uint8_t count = device_manager_get_count();
+    for (int i = count - 1; i >= 0; i--) {
+        device_config_t dev;
+        if (device_manager_get_by_index(i, &dev) == ESP_OK) {
+            device_manager_remove(dev.ieee_addr);
+        }
+    }
+
+    // Clear all errors
+    device_manager_clear_all_errors();
+
+    // Reset global config
+    global_config_t config = {0};
+    device_manager_set_global_config(&config);
+
+    // Reset RTC flag
+    s_rtc_initialized = false;
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", true);
+    cJSON_AddStringToObject(response, "message", "Gyari alaphelyzetbe allitas sikeres");
+
+    char *json_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(response);
+
+    ESP_LOGI(TAG, "Factory reset completed");
+    return ESP_OK;
+}
+
 // ============================================================================
 // HTTP Server Setup
 // ============================================================================
@@ -671,6 +709,13 @@ static esp_err_t start_webserver(void)
     };
     httpd_register_uri_handler(s_server, &api_global_config_post);
 
+    httpd_uri_t api_factory_reset = {
+        .uri = "/api/factory-reset",
+        .method = HTTP_POST,
+        .handler = api_factory_reset_handler
+    };
+    httpd_register_uri_handler(s_server, &api_factory_reset);
+
     ESP_LOGI(TAG, "HTTP server started");
     return ESP_OK;
 }
@@ -720,9 +765,10 @@ esp_err_t wifi_task_start(void)
             .channel = WIFI_CHANNEL,
             .password = WIFI_PASSWORD,
             .max_connection = WIFI_MAX_CONNECTIONS,
-            .authmode = WIFI_AUTH_WPA2_PSK,
+            .authmode = WIFI_AUTH_WPA_WPA2_PSK,  // Mixed mode for better compatibility
             .ssid_hidden = 0,
             .beacon_interval = 100,
+            .pairwise_cipher = WIFI_CIPHER_TYPE_CCMP,
         },
     };
 

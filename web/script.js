@@ -5,7 +5,7 @@
 // ============================================================================
 
 let devices = [];
-let permitJoinTimer = null;
+// permitJoinTimer removed - pairing is done via physical button
 let clockInterval = null;
 let currentEditDevice = null;
 let espTimeOffset = 0;  // Offset between ESP RTC and local time
@@ -172,57 +172,7 @@ async function loadDevices() {
     }
 }
 
-async function permitJoin() {
-    // Warn user if Zigbee is not active
-    if (!zigbeeActive) {
-        showToast('Figyelmeztetes: Zigbee mod nem aktiv! Elobb valtson Zigbee modba a gomb megnyomasaval.', true);
-        return;
-    }
-
-    try {
-        const response = await fetch('/api/zigbee/permit-join', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ duration: 60 })
-        });
-
-        const data = await response.json();
-        if (data.success) {
-            showToast('Eszkoz hozzaadas engedelyezve 60 masodpercig');
-            startPermitJoinTimer(60);
-        }
-    } catch (error) {
-        console.error('Permit join error:', error);
-        showToast('Hiba tortent', true);
-    }
-}
-
-function startPermitJoinTimer(seconds) {
-    const timerEl = document.getElementById('permit-join-timer');
-    const btn = document.getElementById('permit-join-btn');
-
-    timerEl.classList.remove('hidden');
-    btn.disabled = true;
-
-    let remaining = seconds;
-    timerEl.textContent = remaining + 's';
-
-    if (permitJoinTimer) {
-        clearInterval(permitJoinTimer);
-    }
-
-    permitJoinTimer = setInterval(() => {
-        remaining--;
-        timerEl.textContent = remaining + 's';
-
-        if (remaining <= 0) {
-            clearInterval(permitJoinTimer);
-            timerEl.classList.add('hidden');
-            btn.disabled = false;
-            loadDevices();
-        }
-    }, 1000);
-}
+// permitJoin() and startPermitJoinTimer() removed - pairing is done via physical button on ESP
 
 async function deleteDevice(ieeeAddr) {
     if (!confirm('Biztosan torolni szeretne ezt az eszkozt?')) {
@@ -318,6 +268,35 @@ async function saveGlobalConfig() {
         }
     } catch (error) {
         console.error('Save config error:', error);
+        showToast('Kapcsolati hiba', true);
+    }
+}
+
+async function factoryReset() {
+    if (!confirm('Biztosan torolni szeretne az osszes eszkozt es beallitast? Ez a muvelet nem vonhato vissza!')) {
+        return;
+    }
+
+    if (!confirm('Utolso figyelmeztetes: Az osszes adat torlodik. Folytatja?')) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/factory-reset', {
+            method: 'POST'
+        });
+
+        const data = await response.json();
+        if (data.success) {
+            showToast('Gyari alaphelyzetbe allitas sikeres. Az eszkoz ujraindul...');
+            setTimeout(() => {
+                location.reload();
+            }, 3000);
+        } else {
+            showToast(data.message || 'Hiba tortent', true);
+        }
+    } catch (error) {
+        console.error('Factory reset error:', error);
         showToast('Kapcsolati hiba', true);
     }
 }

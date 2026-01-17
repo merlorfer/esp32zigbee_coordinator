@@ -85,6 +85,10 @@ static void on_button_short_press(void)
             ESP_LOGI(TAG, "Starting Zigbee task for the first time");
             zigbee_task_start();
             s_zigbee_started = true;
+        } else {
+            // Resume Zigbee radio if it was previously stopped
+            ESP_LOGI(TAG, "Resuming Zigbee radio");
+            zigbee_task_resume();
         }
 
         scheduler_task_start();
@@ -97,9 +101,14 @@ static void on_button_short_press(void)
         led_set_state(LED_STATE_NORMAL);
     } else {
         // Switch to Wi-Fi mode
-        // NOTE: On ESP32-C6, Wi-Fi and Zigbee share the radio - coexistence enabled
+        // NOTE: On ESP32-C6, Wi-Fi and Zigbee share the radio
         ESP_LOGI(TAG, "Switching to Wi-Fi configuration mode");
         scheduler_task_stop();
+
+        // Stop Zigbee radio to free up the shared radio for Wi-Fi
+        if (s_zigbee_started) {
+            zigbee_task_stop();
+        }
 
         // Give the system time to settle before starting Wi-Fi
         // This helps with radio coexistence on ESP32-C6
