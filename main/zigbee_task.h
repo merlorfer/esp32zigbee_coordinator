@@ -81,6 +81,17 @@ esp_err_t zigbee_task_stop(void);
  */
 esp_err_t zigbee_task_resume(void);
 
+/**
+ * @brief Request device to leave the Zigbee network
+ *
+ * Sends a ZDO leave request to the device, asking it to leave the network.
+ * This should be called when removing a device from the device manager.
+ *
+ * @param ieee_addr Device IEEE address
+ * @return ESP_OK on success
+ */
+esp_err_t zigbee_request_leave(uint64_t ieee_addr);
+
 #ifdef __cplusplus
 }
 #endif

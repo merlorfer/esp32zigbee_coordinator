@@ -5,6 +5,7 @@
 
 #include "wifi_task.h"
 #include "device_manager.h"
+#include "zigbee_task.h"
 #include "led_task.h"
 #include "nvs_manager.h"
 #include "esp_wifi.h"
@@ -24,6 +25,11 @@ static const char *TAG = "WIFI_TASK";
 static httpd_handle_t s_server = NULL;
 static bool s_wifi_active = false;
 static bool s_rtc_initialized = false;
+
+// Pending Zigbee leave requests (for devices deleted while in Wi-Fi mode)
+#define MAX_PENDING_LEAVE 8
+static uint64_t s_pending_leave[MAX_PENDING_LEAVE];
+static uint8_t s_pending_leave_count = 0;
 
 // External declarations
 extern EventGroupHandle_t g_event_group;
@@ -426,19 +432,43 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
             cJSON *off = cJSON_GetObjectItem(pair, "off");
 
             if (cJSON_IsString(on)) {
-                sscanf(on->valuestring, "%hhu:%hhu",
-                       &dev.time_pairs[i].on_time.hour,
-                       &dev.time_pairs[i].on_time.minute);
+                int on_hour = 0, on_min = 0;
+                if (sscanf(on->valuestring, "%d:%d", &on_hour, &on_min) == 2) {
+                    dev.time_pairs[i].on_time.hour = (uint8_t)on_hour;
+                    dev.time_pairs[i].on_time.minute = (uint8_t)on_min;
+                    ESP_LOGI(TAG, "Parsed ON time[%d]: %02d:%02d", i, on_hour, on_min);
+                } else {
+                    ESP_LOGW(TAG, "Failed to parse ON time: %s", on->valuestring);
+                }
             }
             if (cJSON_IsString(off)) {
-                sscanf(off->valuestring, "%hhu:%hhu",
-                       &dev.time_pairs[i].off_time.hour,
-                       &dev.time_pairs[i].off_time.minute);
+                int off_hour = 0, off_min = 0;
+                if (sscanf(off->valuestring, "%d:%d", &off_hour, &off_min) == 2) {
+                    dev.time_pairs[i].off_time.hour = (uint8_t)off_hour;
+                    dev.time_pairs[i].off_time.minute = (uint8_t)off_min;
+                    ESP_LOGI(TAG, "Parsed OFF time[%d]: %02d:%02d", i, off_hour, off_min);
+                } else {
+                    ESP_LOGW(TAG, "Failed to parse OFF time: %s", off->valuestring);
+                }
             }
         }
     }
 
     cJSON_Delete(root);
+
+    ESP_LOGI(TAG, "Saving config: mode=%d, enabled=%d, delay_on=%lu, delay_dur=%lu",
+             dev.mode, dev.enabled,
+             (unsigned long)dev.delay_on_minutes,
+             (unsigned long)dev.delay_duration_minutes);
+
+    if (dev.mode == MODE_FIXED_TIME && dev.time_pair_count > 0) {
+        for (int i = 0; i < dev.time_pair_count; i++) {
+            ESP_LOGI(TAG, "Time pair[%d]: ON=%02d:%02d, OFF=%02d:%02d",
+                     i,
+                     dev.time_pairs[i].on_time.hour, dev.time_pairs[i].on_time.minute,
+                     dev.time_pairs[i].off_time.hour, dev.time_pairs[i].off_time.minute);
+        }
+    }
 
     device_manager_update(ieee_addr, &dev);
 
@@ -472,6 +502,17 @@ static esp_err_t api_device_delete_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "Delete device request for IEEE addr: %s", ieee_str);
 
     esp_err_t err = device_manager_remove(ieee_addr);
+
+    if (err == ESP_OK) {
+        // Try to send leave request now (will fail if Zigbee not running)
+        if (zigbee_request_leave(ieee_addr) != ESP_OK) {
+            // Queue for later when Zigbee resumes
+            if (s_pending_leave_count < MAX_PENDING_LEAVE) {
+                s_pending_leave[s_pending_leave_count++] = ieee_addr;
+                ESP_LOGI(TAG, "Queued leave request for %s (will send when Zigbee active)", ieee_str);
+            }
+        }
+    }
 
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "success", err == ESP_OK);
@@ -926,4 +967,22 @@ esp_err_t wifi_task_get_rtc_string(char *buffer, size_t buffer_size)
 bool wifi_task_is_rtc_initialized(void)
 {
     return s_rtc_initialized;
+}
+
+void wifi_task_process_pending_leave(void)
+{
+    if (s_pending_leave_count == 0) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Processing %d pending Zigbee leave request(s)", s_pending_leave_count);
+
+    for (uint8_t i = 0; i < s_pending_leave_count; i++) {
+        char ieee_str[20];
+        format_ieee_addr_hex(ieee_str, sizeof(ieee_str), s_pending_leave[i]);
+        ESP_LOGI(TAG, "Sending pending leave request for %s", ieee_str);
+        zigbee_request_leave(s_pending_leave[i]);
+    }
+
+    s_pending_leave_count = 0;
 }

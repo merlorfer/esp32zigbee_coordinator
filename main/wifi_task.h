@@ -62,6 +62,14 @@ esp_err_t wifi_task_get_rtc_string(char *buffer, size_t buffer_size);
  */
 bool wifi_task_is_rtc_initialized(void);
 
+/**
+ * @brief Process pending Zigbee leave requests
+ *
+ * Call this when Zigbee mode becomes active to send leave requests
+ * for devices that were deleted while in Wi-Fi mode.
+ */
+void wifi_task_process_pending_leave(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -110,7 +110,12 @@ static void process_fixed_time_mode(device_config_t *dev, struct tm *current_tim
 
 static void process_delay_mode(device_config_t *dev)
 {
-    if (!dev->enabled || s_delay_cycle_start == 0) {
+    if (!dev->enabled) {
+        ESP_LOGW(TAG, "Delay mode: device not enabled");
+        return;
+    }
+    if (s_delay_cycle_start == 0) {
+        ESP_LOGW(TAG, "Delay mode: cycle not started");
         return;
     }
 
@@ -118,6 +123,7 @@ static void process_delay_mode(device_config_t *dev)
     uint32_t cycle_length = dev->delay_on_minutes + dev->delay_duration_minutes;
 
     if (cycle_length == 0) {
+        ESP_LOGW(TAG, "Delay mode: cycle_length is 0");
         return;
     }
 
@@ -133,11 +139,21 @@ static void process_delay_mode(device_config_t *dev)
     if (expected_state != dev->current_state) {
         char ieee_str[24];
         format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
-        ESP_LOGI(TAG, "Delay mode %s triggered for device %s (cycle pos: %lu/%lu)",
+
+        // Calculate time until next state change for logging
+        uint32_t minutes_until_change;
+        if (expected_state) {
+            minutes_until_change = cycle_length - position_in_cycle;
+        } else {
+            minutes_until_change = dev->delay_on_minutes - position_in_cycle;
+        }
+
+        ESP_LOGI(TAG, "Delay mode %s triggered for %s (pos: %lu/%lu min, next change in %lu min)",
                  expected_state ? "ON" : "OFF",
                  ieee_str,
                  (unsigned long)position_in_cycle,
-                 (unsigned long)cycle_length);
+                 (unsigned long)cycle_length,
+                 (unsigned long)minutes_until_change);
 
         cmd_queue_msg_t msg = {
             .ieee_addr = dev->ieee_addr,
@@ -145,6 +161,10 @@ static void process_delay_mode(device_config_t *dev)
             .cmd = expected_state ? CMD_ON : CMD_OFF
         };
         xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+
+        // Update device state locally (will be confirmed by Zigbee response)
+        dev->current_state = expected_state;
+        device_manager_update(dev->ieee_addr, dev);
     }
 }
 
@@ -231,6 +251,14 @@ esp_err_t scheduler_task_init(void)
 
 esp_err_t scheduler_task_start(void)
 {
+    // Check if task already exists - just resume it
+    if (s_scheduler_task_handle != NULL) {
+        s_scheduler_active = true;
+        s_delay_cycle_start = (uint32_t)time(NULL);
+        ESP_LOGI(TAG, "Scheduler task resumed, delay cycle reset");
+        return ESP_OK;
+    }
+
     BaseType_t ret = xTaskCreate(
         scheduler_task,
         "scheduler_task",
@@ -246,7 +274,9 @@ esp_err_t scheduler_task_start(void)
     }
 
     s_scheduler_active = true;
-    ESP_LOGI(TAG, "Scheduler task started");
+    // Initialize delay cycle start time
+    s_delay_cycle_start = (uint32_t)time(NULL);
+    ESP_LOGI(TAG, "Scheduler task started, delay cycle initialized at %lu", (unsigned long)s_delay_cycle_start);
     return ESP_OK;
 }
 

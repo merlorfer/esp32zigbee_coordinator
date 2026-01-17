@@ -91,6 +91,11 @@ static void on_button_short_press(void)
             zigbee_task_resume();
         }
 
+        // Process any pending leave requests from devices deleted while in Wi-Fi mode
+        // Wait a bit for Zigbee to fully initialize
+        vTaskDelay(pdMS_TO_TICKS(500));
+        wifi_task_process_pending_leave();
+
         scheduler_task_start();
         s_wifi_mode = false;
 

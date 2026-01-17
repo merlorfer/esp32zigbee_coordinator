@@ -40,6 +40,16 @@ static void uint64_to_ieee(uint64_t addr, uint8_t *ieee_addr)
     memcpy(ieee_addr, &addr, sizeof(uint64_t));
 }
 
+/* Helper function to format uint64 IEEE address as hex string */
+static void format_ieee_addr_u64(char *buf, size_t buf_size, uint64_t ieee_addr)
+{
+    uint8_t ieee_bytes[8];
+    uint64_to_ieee(ieee_addr, ieee_bytes);
+    snprintf(buf, buf_size, "%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
+             ieee_bytes[7], ieee_bytes[6], ieee_bytes[5], ieee_bytes[4],
+             ieee_bytes[3], ieee_bytes[2], ieee_bytes[1], ieee_bytes[0]);
+}
+
 /* Zigbee configuration */
 #define INSTALLCODE_POLICY_ENABLE       false      /* enable the install code policy for security */
 #define HA_GATEWAY_ENDPOINT             1          /* esp gateway device endpoint */
@@ -319,8 +329,12 @@ static void zigbee_cmd_processor_task(void *pvParameters)
                 continue;
             }
 
-            ESP_LOGI(TAG, "Processing command: addr=0x%016" PRIX64 ", ep=%d, cmd=%d",
-                     msg.ieee_addr, msg.endpoint, msg.cmd);
+            char cmd_ieee_str[24];
+            format_ieee_addr_u64(cmd_ieee_str, sizeof(cmd_ieee_str), msg.ieee_addr);
+            const char *cmd_name = (msg.cmd == CMD_ON) ? "ON" :
+                                   (msg.cmd == CMD_OFF) ? "OFF" : "TOGGLE";
+            ESP_LOGI(TAG, "Processing %s command for device %s (ep=%d)",
+                     cmd_name, cmd_ieee_str, msg.endpoint);
 
             switch (msg.cmd) {
             case CMD_ON:
@@ -337,9 +351,27 @@ static void zigbee_cmd_processor_task(void *pvParameters)
             // Wait for response or timeout
             vTaskDelay(pdMS_TO_TICKS(ZIGBEE_CMD_TIMEOUT_MS));
 
-            // Check if retry is needed
+            // Check if retry is needed - but abort if new command arrives
             while (s_pending_cmd.pending && s_pending_cmd.retry_count < ZIGBEE_RETRY_COUNT) {
+                // Check if there's a new command in queue - if yes, abort retry
+                if (uxQueueMessagesWaiting(g_cmd_queue) > 0) {
+                    ESP_LOGI(TAG, "New command in queue, aborting retry for current command");
+                    s_pending_cmd.pending = false;
+                    break;
+                }
+
                 vTaskDelay(pdMS_TO_TICKS(ZIGBEE_RETRY_DELAY_MS));
+
+                // Check again after delay
+                if (uxQueueMessagesWaiting(g_cmd_queue) > 0) {
+                    ESP_LOGI(TAG, "New command in queue, aborting retry for current command");
+                    s_pending_cmd.pending = false;
+                    break;
+                }
+
+                s_pending_cmd.retry_count++;
+                ESP_LOGI(TAG, "Retrying %s command (%d/%d)",
+                         cmd_name, s_pending_cmd.retry_count, ZIGBEE_RETRY_COUNT);
 
                 switch (msg.cmd) {
                 case CMD_ON:
@@ -357,6 +389,7 @@ static void zigbee_cmd_processor_task(void *pvParameters)
             }
 
             if (s_pending_cmd.pending) {
+                ESP_LOGW(TAG, "Command failed after %d retries", ZIGBEE_RETRY_COUNT);
                 device_manager_set_error(msg.ieee_addr, "Nem valaszol");
                 led_set_state(LED_STATE_ERROR);
                 s_pending_cmd.pending = false;
@@ -460,7 +493,9 @@ esp_err_t zigbee_send_on(uint64_t ieee_addr, uint8_t endpoint)
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
-    ESP_LOGI(TAG, "ON command sent to 0x%016" PRIX64, ieee_addr);
+    char on_ieee_str[24];
+    format_ieee_addr_u64(on_ieee_str, sizeof(on_ieee_str), ieee_addr);
+    ESP_LOGI(TAG, "ON command sent to %s", on_ieee_str);
 
     return ESP_OK;
 }
@@ -495,7 +530,9 @@ esp_err_t zigbee_send_off(uint64_t ieee_addr, uint8_t endpoint)
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
-    ESP_LOGI(TAG, "OFF command sent to 0x%016" PRIX64, ieee_addr);
+    char off_ieee_str[24];
+    format_ieee_addr_u64(off_ieee_str, sizeof(off_ieee_str), ieee_addr);
+    ESP_LOGI(TAG, "OFF command sent to %s", off_ieee_str);
 
     return ESP_OK;
 }
@@ -599,6 +636,42 @@ esp_err_t zigbee_task_resume(void)
     }
 
     ESP_LOGI(TAG, "Zigbee radio resumed");
+
+    return ESP_OK;
+}
+
+esp_err_t zigbee_request_leave(uint64_t ieee_addr)
+{
+    if (!s_zigbee_running) {
+        ESP_LOGW(TAG, "Zigbee not running, cannot send leave request");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Convert uint64_t to esp_zb_ieee_addr_t
+    esp_zb_ieee_addr_t ieee;
+    uint64_to_ieee(ieee_addr, ieee);
+
+    char ieee_str[24];
+    format_ieee_addr(ieee_str, sizeof(ieee_str), ieee);
+    ESP_LOGI(TAG, "Requesting device %s to leave the network", ieee_str);
+
+    // Get short address for the device
+    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee);
+    if (short_addr == 0xFFFF) {
+        ESP_LOGW(TAG, "Device not found in network, may have already left");
+        return ESP_OK;  // Not an error - device is not in network
+    }
+
+    // Send management leave request
+    esp_zb_zdo_mgmt_leave_req_param_t leave_req = {
+        .dst_nwk_addr = short_addr,
+        .rejoin = 0,       // Don't rejoin
+        .remove_children = 1,  // Remove children too
+    };
+    memcpy(leave_req.device_address, ieee, sizeof(esp_zb_ieee_addr_t));
+
+    esp_zb_zdo_device_leave_req(&leave_req, NULL, NULL);
+    ESP_LOGI(TAG, "Leave request sent to device %s (short: 0x%04x)", ieee_str, short_addr);
 
     return ESP_OK;
 }
