@@ -111,8 +111,9 @@ static void on_button_short_press(void)
         }
 
         // Give the system time to settle before starting Wi-Fi
-        // This helps with radio coexistence on ESP32-C6
-        vTaskDelay(pdMS_TO_TICKS(500));
+        // Longer delay needed after IEEE 802.15.4 radio was active
+        ESP_LOGI(TAG, "Waiting for radio to settle...");
+        vTaskDelay(pdMS_TO_TICKS(1000));
 
         esp_err_t ret = wifi_task_start();
         if (ret != ESP_OK) {

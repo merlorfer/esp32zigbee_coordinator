@@ -34,6 +34,20 @@ static esp_err_t init_spiffs(void);
 static esp_err_t start_webserver(void);
 static void stop_webserver(void);
 
+/* Helper function to format IEEE address as hex string with 0x prefix */
+static void format_ieee_addr_hex(char *buf, size_t buf_size, uint64_t ieee_addr)
+{
+    snprintf(buf, buf_size, "0x%02X%02X%02X%02X%02X%02X%02X%02X",
+             (uint8_t)((ieee_addr >> 56) & 0xFF),
+             (uint8_t)((ieee_addr >> 48) & 0xFF),
+             (uint8_t)((ieee_addr >> 40) & 0xFF),
+             (uint8_t)((ieee_addr >> 32) & 0xFF),
+             (uint8_t)((ieee_addr >> 24) & 0xFF),
+             (uint8_t)((ieee_addr >> 16) & 0xFF),
+             (uint8_t)((ieee_addr >> 8) & 0xFF),
+             (uint8_t)(ieee_addr & 0xFF));
+}
+
 // ============================================================================
 // SPIFFS Initialization
 // ============================================================================
@@ -264,7 +278,7 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
         cJSON *device = cJSON_CreateObject();
 
         char addr_str[20];
-        snprintf(addr_str, sizeof(addr_str), "0x%016llX", (unsigned long long)dev.ieee_addr);
+        format_ieee_addr_hex(addr_str, sizeof(addr_str), dev.ieee_addr);
         cJSON_AddStringToObject(device, "ieee_addr", addr_str);
         cJSON_AddNumberToObject(device, "endpoint", dev.endpoint);
         cJSON_AddStringToObject(device, "manufacturer", dev.manufacturer);
@@ -343,7 +357,9 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
 
     // Use base 0 for auto-detection of hex prefix (0x)
     uint64_t ieee_addr = strtoull(addr_start, NULL, 0);
-    ESP_LOGI(TAG, "Device config request for IEEE addr: 0x%016llX", (unsigned long long)ieee_addr);
+    char ieee_str[20];
+    format_ieee_addr_hex(ieee_str, sizeof(ieee_str), ieee_addr);
+    ESP_LOGI(TAG, "Device config request for IEEE addr: %s", ieee_str);
 
     // Read request body
     char buf[512];
@@ -451,7 +467,9 @@ static esp_err_t api_device_delete_handler(httpd_req_t *req)
 
     // Use base 0 for auto-detection of hex prefix (0x)
     uint64_t ieee_addr = strtoull(addr_start, NULL, 0);
-    ESP_LOGI(TAG, "Delete device request for IEEE addr: 0x%016llX", (unsigned long long)ieee_addr);
+    char ieee_str[20];
+    format_ieee_addr_hex(ieee_str, sizeof(ieee_str), ieee_addr);
+    ESP_LOGI(TAG, "Delete device request for IEEE addr: %s", ieee_str);
 
     esp_err_t err = device_manager_remove(ieee_addr);
 
@@ -674,8 +692,10 @@ static esp_err_t start_webserver(void)
     };
     httpd_register_uri_handler(s_server, &api_devices);
 
+    // Note: ESP-IDF HTTP server wildcard (*) only works at end of URI
+    // So we use /api/devices/* and check for /config in the handler
     httpd_uri_t api_device_config = {
-        .uri = "/api/devices/*/config",
+        .uri = "/api/devices/*",
         .method = HTTP_POST,
         .handler = api_device_config_post_handler
     };
@@ -765,12 +785,25 @@ esp_err_t wifi_task_start(void)
             .channel = WIFI_CHANNEL,
             .password = WIFI_PASSWORD,
             .max_connection = WIFI_MAX_CONNECTIONS,
-            .authmode = WIFI_AUTH_WPA_WPA2_PSK,  // Mixed mode for better compatibility
+            .authmode = WIFI_AUTH_WPA2_PSK,
             .ssid_hidden = 0,
             .beacon_interval = 100,
-            .pairwise_cipher = WIFI_CIPHER_TYPE_CCMP,
         },
     };
+
+    // If Wi-Fi was previously running, do a full restart
+    // This is important after switching from Zigbee mode on ESP32-C6
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) == ESP_OK && mode != WIFI_MODE_NULL) {
+        ESP_LOGI(TAG, "Stopping Wi-Fi for clean restart...");
+        esp_wifi_stop();
+        vTaskDelay(pdMS_TO_TICKS(200));
+
+        // Restore Wi-Fi to clear any stale state from coexistence
+        ESP_LOGI(TAG, "Restoring Wi-Fi state...");
+        esp_wifi_restore();
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 
     ret = esp_wifi_set_mode(WIFI_MODE_AP);
     if (ret != ESP_OK) {

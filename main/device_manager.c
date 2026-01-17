@@ -12,6 +12,20 @@
 
 static const char *TAG = "DEVICE_MANAGER";
 
+/* Helper function to format IEEE address as hex string */
+static void format_ieee_addr_str(char *buf, size_t buf_size, uint64_t ieee_addr)
+{
+    snprintf(buf, buf_size, "%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
+             (uint8_t)((ieee_addr >> 56) & 0xFF),
+             (uint8_t)((ieee_addr >> 48) & 0xFF),
+             (uint8_t)((ieee_addr >> 40) & 0xFF),
+             (uint8_t)((ieee_addr >> 32) & 0xFF),
+             (uint8_t)((ieee_addr >> 24) & 0xFF),
+             (uint8_t)((ieee_addr >> 16) & 0xFF),
+             (uint8_t)((ieee_addr >> 8) & 0xFF),
+             (uint8_t)(ieee_addr & 0xFF));
+}
+
 static device_config_t s_devices[MAX_DEVICES];
 static device_error_t s_errors[MAX_DEVICES];
 static global_config_t s_global_config;
@@ -65,7 +79,9 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
 
     // Check if device already exists
     if (device_manager_exists(ieee_addr)) {
-        ESP_LOGW(TAG, "Device 0x%016llX already exists", (unsigned long long)ieee_addr);
+        char ieee_str[24];
+        format_ieee_addr_str(ieee_str, sizeof(ieee_str), ieee_addr);
+        ESP_LOGW(TAG, "Device %s already exists", ieee_str);
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -110,8 +126,9 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
         xSemaphoreGive(g_device_mutex);
     }
 
-    ESP_LOGI(TAG, "Added device 0x%016llX at index %d",
-             (unsigned long long)ieee_addr, s_device_count - 1);
+    char ieee_str[24];
+    format_ieee_addr_str(ieee_str, sizeof(ieee_str), ieee_addr);
+    ESP_LOGI(TAG, "Added device %s at index %d", ieee_str, s_device_count - 1);
     return ESP_OK;
 }
 
@@ -204,7 +221,9 @@ esp_err_t device_manager_update(uint64_t ieee_addr, const device_config_t *devic
         xSemaphoreGive(g_device_mutex);
     }
 
-    ESP_LOGI(TAG, "Updated device 0x%016llX", (unsigned long long)ieee_addr);
+    char ieee_str[24];
+    format_ieee_addr_str(ieee_str, sizeof(ieee_str), ieee_addr);
+    ESP_LOGI(TAG, "Updated device %s", ieee_str);
     return ESP_OK;
 }
 
@@ -257,8 +276,9 @@ esp_err_t device_manager_set_error(uint64_t ieee_addr, const char *error_message
 
     nvs_save_error(index, &s_errors[index]);
 
-    ESP_LOGW(TAG, "Error set for device 0x%016llX: %s",
-             (unsigned long long)ieee_addr, error_message ? error_message : "unknown");
+    char ieee_str[24];
+    format_ieee_addr_str(ieee_str, sizeof(ieee_str), ieee_addr);
+    ESP_LOGW(TAG, "Error set for device %s: %s", ieee_str, error_message ? error_message : "unknown");
     return ESP_OK;
 }
 

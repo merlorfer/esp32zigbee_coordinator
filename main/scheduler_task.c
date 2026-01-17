@@ -23,6 +23,20 @@ static TaskHandle_t s_scheduler_task_handle = NULL;
 static bool s_scheduler_active = false;
 static uint32_t s_delay_cycle_start = 0;
 
+/* Helper function to format IEEE address as hex string */
+static void format_ieee_addr_str(char *buf, size_t buf_size, uint64_t ieee_addr)
+{
+    snprintf(buf, buf_size, "%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
+             (uint8_t)((ieee_addr >> 56) & 0xFF),
+             (uint8_t)((ieee_addr >> 48) & 0xFF),
+             (uint8_t)((ieee_addr >> 40) & 0xFF),
+             (uint8_t)((ieee_addr >> 32) & 0xFF),
+             (uint8_t)((ieee_addr >> 24) & 0xFF),
+             (uint8_t)((ieee_addr >> 16) & 0xFF),
+             (uint8_t)((ieee_addr >> 8) & 0xFF),
+             (uint8_t)(ieee_addr & 0xFF));
+}
+
 // ============================================================================
 // Time Comparison Helpers
 // ============================================================================
@@ -59,8 +73,9 @@ static void process_fixed_time_mode(device_config_t *dev, struct tm *current_tim
         // Check ON time
         if (time_matches(&pair->on_time, current_time)) {
             if (!dev->current_state) {
-                ESP_LOGI(TAG, "Fixed time ON triggered for device 0x%016llX",
-                         (unsigned long long)dev->ieee_addr);
+                char ieee_str[24];
+                format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
+                ESP_LOGI(TAG, "Fixed time ON triggered for device %s", ieee_str);
 
                 cmd_queue_msg_t msg = {
                     .ieee_addr = dev->ieee_addr,
@@ -74,8 +89,9 @@ static void process_fixed_time_mode(device_config_t *dev, struct tm *current_tim
         // Check OFF time
         if (time_matches(&pair->off_time, current_time)) {
             if (dev->current_state) {
-                ESP_LOGI(TAG, "Fixed time OFF triggered for device 0x%016llX",
-                         (unsigned long long)dev->ieee_addr);
+                char ieee_str[24];
+                format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
+                ESP_LOGI(TAG, "Fixed time OFF triggered for device %s", ieee_str);
 
                 cmd_queue_msg_t msg = {
                     .ieee_addr = dev->ieee_addr,
@@ -115,9 +131,11 @@ static void process_delay_mode(device_config_t *dev)
 
     // Check if state change is needed
     if (expected_state != dev->current_state) {
-        ESP_LOGI(TAG, "Delay mode %s triggered for device 0x%016llX (cycle pos: %lu/%lu)",
+        char ieee_str[24];
+        format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
+        ESP_LOGI(TAG, "Delay mode %s triggered for device %s (cycle pos: %lu/%lu)",
                  expected_state ? "ON" : "OFF",
-                 (unsigned long long)dev->ieee_addr,
+                 ieee_str,
                  (unsigned long)position_in_cycle,
                  (unsigned long)cycle_length);
 

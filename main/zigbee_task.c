@@ -633,16 +633,31 @@ static void active_ep_cb(esp_zb_zdp_status_t zdo_status, uint8_t ep_count, uint8
         return;
     }
 
-    // Request simple descriptor for each endpoint to find ON_OFF cluster
+    // Log all endpoints
     for (uint8_t i = 0; i < ep_count; i++) {
         ESP_LOGI(TAG, "  Endpoint %d: %d", i, ep_list[i]);
+    }
 
-        esp_zb_zdo_simple_desc_req_param_t desc_req = {
-            .addr_of_interest = s_pending_discovery.short_addr,
-            .endpoint = ep_list[i],
-        };
+    // Add device directly using first endpoint (usually endpoint 1 for ON_OFF devices)
+    // Simple Descriptor requests often time out on some devices, so we add directly
+    if (s_pending_discovery.pending) {
+        uint8_t endpoint = ep_list[0];  // Use first endpoint
 
-        esp_zb_zdo_simple_desc_req(&desc_req, simple_desc_cb, (void *)(uintptr_t)ep_list[i]);
+        uint8_t ieee_bytes[8];
+        uint64_to_ieee(s_pending_discovery.ieee_addr, ieee_bytes);
+        char ieee_str[24];
+        format_ieee_addr(ieee_str, sizeof(ieee_str), ieee_bytes);
+
+        ESP_LOGI(TAG, "Adding device %s with endpoint %d (direct add)", ieee_str, endpoint);
+
+        esp_err_t ret = device_manager_add(s_pending_discovery.ieee_addr, endpoint, NULL, NULL);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Device added successfully");
+        } else {
+            ESP_LOGW(TAG, "Failed to add device: %s", esp_err_to_name(ret));
+        }
+
+        s_pending_discovery.pending = false;
     }
 }
 
