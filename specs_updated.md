@@ -94,16 +94,18 @@ idf_component_register(
 ## 3. Hardver Konfiguráció
 
 ### GPIO Kiosztás
-- **GPIO 9:** Toggle gomb (Beállítási mód ↔ Automatizációs mód)
+- **GPIO 9:** Többfunkciós gomb
+  - **Rövid nyomás (<3 sec):** Mód váltás (Wi-Fi AP ↔ Automatizációs mód)
+  - **Hosszú nyomás (≥3 sec):** Zigbee párosítási mód aktiválása (60 sec)
 - **Beépített LED:** Állapotjelzés (a board beépített LED-je)
 
 ### LED Állapotjelzések
 | Állapot | LED Viselkedés | Leírás |
 |---------|----------------|---------|
-| **Normál működés** | Másodpercenként villog | Automatizációs mód aktív, rendszer működik |
+| **Normál működés** | 1 másodpercenként villog | Automatizációs mód aktív, rendszer működik |
 | **Wi-Fi AP aktív** | Folyamatos világítás | Beállítási mód, web interfész elérhető |
-| **Újraindulás/Óra nincs beállítva** | Gyors villogás (0.5 sec) | Rendszer boot után, RTC nincs inicializálva |
-| **Hiba történt** | Speciális minta (pl. 3x gyors villogás, szünet) | Zigbee kommunikációs hiba |
+| **Párosítási mód** | Gyors villogás (0.25 sec) | Zigbee eszköz párosítás folyamatban |
+| **Hiba történt** | 3x gyors villogás, szünet | Zigbee kommunikációs hiba |
 
 ### RTC (Real-Time Clock)
 - **Típus:** ESP32-C6 belső RTC
@@ -194,15 +196,14 @@ Eszköz KI: 17:30
 - **Működés:** Amikor a GPIO 9 gombbal aktiválod a Wi-Fi AP-t (és eléred a webes felületet), ez a beállítás határozza meg az eszközök viselkedését
 
 ##### 5. Mentés és Alkalmazás
-- **"Beállítások mentése" gomb:** 
+- **"Beállítások mentése" gomb:**
   - Adatok mentése NVS-be
   - JSON formátumú válasz (sikeres/sikertelen)
   - Toast notification visszajelzés (rövid, automatikusan eltűnő üzenet a képernyő sarkában, pl. "✓ Beállítások sikeresen mentve")
-- **"Automatizáció indítása" gomb:**
-  - Wi-Fi AP leállítása
-  - Zigbee stack aktiválása
-  - Scheduler task indítása
-  - LED normál működésre vált
+- **Automatizáció indítása:**
+  - Nincs gomb a webes felületen
+  - Információs szöveg: "Az automatizáció a GPIO9 gomb rövid megnyomásával indul"
+  - Zigbee párosításhoz: "Tartsa lenyomva a GPIO9 gombot 3 másodpercig"
 
 ##### 6. Hibanapló Megjelenítés
 - **Hiba megjelenítés az eszközlistában:**
@@ -219,7 +220,9 @@ Eszköz KI: 17:30
 ### B. Zigbee Működés és Automatizációs Logika
 
 #### Támogatott Eszköztípusok
-- **Jelenlegi:** ON/OFF Switch (Smart Plug, relay, solenoid valve)
+- **Jelenlegi:** ON/OFF Light (Smart Plug, relay, solenoid valve - vezérelhető eszközök)
+  - Megjegyzés: ON_OFF_LIGHT típusú eszközök, amelyeket a coordinator vezérelhet
+  - Az ON_OFF_SWITCH típus felhasználói eseményeket közvetít (gombnyomás), nem vezérlésre való
 - **Jövőbeli:** Analog/Continuous sensors (pl. vízszint, hőmérséklet)
 - **Maximum eszközszám:** 10 darab
 
@@ -304,7 +307,8 @@ Eszköz KI: 17:30
 - **Felelősségek:**
   - GPIO 9 interrupt kezelés
   - Debounce (a switch_driver.c/.h implementációja szerint)
-  - Mód váltás (Wi-Fi ↔ Zigbee)
+  - Rövid nyomás: Mód váltás (Wi-Fi AP ↔ Automatizáció)
+  - Hosszú nyomás (3+ sec): Zigbee párosítási mód aktiválása
   - LED állapot váltás
 
 #### LED_Task

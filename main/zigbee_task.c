@@ -12,6 +12,7 @@
 #include "freertos/task.h"
 #include "esp_zigbee_core.h"
 #include "ha/esp_zigbee_ha_standard.h"
+#include "zcl/esp_zigbee_zcl_common.h"
 #include <string.h>
 
 /* Zigbee configuration */
@@ -46,6 +47,20 @@ extern QueueHandle_t g_cmd_queue;
 
 static bool s_zigbee_running = false;
 static TaskHandle_t s_zigbee_task_handle = NULL;
+
+// Pending device discovery tracking
+typedef struct {
+    uint16_t short_addr;
+    uint64_t ieee_addr;
+    bool pending;
+} pending_discovery_t;
+
+static pending_discovery_t s_pending_discovery = {0};
+
+// Forward declarations for device discovery
+static void request_active_endpoints(uint16_t short_addr);
+static void active_ep_cb(esp_zb_zdp_status_t zdo_status, uint8_t ep_count, uint8_t *ep_list, void *user_ctx);
+static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc_1_1_t *simple_desc, void *user_ctx);
 
 // Pending command tracking for retry
 typedef struct {
@@ -133,8 +148,19 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                 ieee_addr |= ((uint64_t)dev_annce->ieee_addr[i]) << (i * 8);
             }
 
-            // Add device to device manager
-            device_manager_add(ieee_addr, 1, NULL, NULL);
+            // Check if device already exists
+            if (device_manager_exists(ieee_addr)) {
+                ESP_LOGI(TAG, "Device 0x%016llX already registered", (unsigned long long)ieee_addr);
+                break;
+            }
+
+            // Start device discovery to find the correct endpoint with ON_OFF cluster
+            s_pending_discovery.short_addr = dev_annce->device_short_addr;
+            s_pending_discovery.ieee_addr = ieee_addr;
+            s_pending_discovery.pending = true;
+
+            ESP_LOGI(TAG, "Starting device discovery for 0x%016llX", (unsigned long long)ieee_addr);
+            request_active_endpoints(dev_annce->device_short_addr);
         }
         break;
 
@@ -463,4 +489,101 @@ esp_err_t zigbee_send_toggle(uint64_t ieee_addr, uint8_t endpoint)
 bool zigbee_is_running(void)
 {
     return s_zigbee_running;
+}
+
+// ============================================================================
+// Device Discovery Functions
+// ============================================================================
+
+static void request_active_endpoints(uint16_t short_addr)
+{
+    esp_zb_zdo_active_ep_req_param_t req = {
+        .addr_of_interest = short_addr,
+    };
+
+    ESP_LOGI(TAG, "Requesting active endpoints from 0x%04x", short_addr);
+    esp_zb_zdo_active_ep_req(&req, active_ep_cb, NULL);
+}
+
+static void active_ep_cb(esp_zb_zdp_status_t zdo_status, uint8_t ep_count, uint8_t *ep_list, void *user_ctx)
+{
+    if (zdo_status != ESP_ZB_ZDP_STATUS_SUCCESS) {
+        ESP_LOGW(TAG, "Active endpoint request failed: %d", zdo_status);
+        s_pending_discovery.pending = false;
+        return;
+    }
+
+    ESP_LOGI(TAG, "Device has %d endpoints", ep_count);
+
+    if (ep_count == 0) {
+        ESP_LOGW(TAG, "No endpoints found");
+        s_pending_discovery.pending = false;
+        return;
+    }
+
+    // Request simple descriptor for each endpoint to find ON_OFF cluster
+    for (uint8_t i = 0; i < ep_count; i++) {
+        ESP_LOGI(TAG, "  Endpoint %d: %d", i, ep_list[i]);
+
+        esp_zb_zdo_simple_desc_req_param_t desc_req = {
+            .addr_of_interest = s_pending_discovery.short_addr,
+            .endpoint = ep_list[i],
+        };
+
+        esp_zb_zdo_simple_desc_req(&desc_req, simple_desc_cb, (void *)(uintptr_t)ep_list[i]);
+    }
+}
+
+static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc_1_1_t *simple_desc, void *user_ctx)
+{
+    uint8_t endpoint = (uint8_t)(uintptr_t)user_ctx;
+
+    if (zdo_status != ESP_ZB_ZDP_STATUS_SUCCESS || simple_desc == NULL) {
+        ESP_LOGW(TAG, "Simple descriptor request failed for endpoint %d: %d", endpoint, zdo_status);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Simple descriptor for endpoint %d:", endpoint);
+    ESP_LOGI(TAG, "  Device ID: 0x%04x", simple_desc->app_device_id);
+    ESP_LOGI(TAG, "  Profile ID: 0x%04x", simple_desc->app_profile_id);
+    ESP_LOGI(TAG, "  Input clusters: %d", simple_desc->app_input_cluster_count);
+    ESP_LOGI(TAG, "  Output clusters: %d", simple_desc->app_output_cluster_count);
+
+    // Check if this is a Home Automation profile device
+    if (simple_desc->app_profile_id != ESP_ZB_AF_HA_PROFILE_ID) {
+        ESP_LOGD(TAG, "  Not a HA profile device, skipping");
+        return;
+    }
+
+    // Check input clusters (server side) for ON_OFF cluster
+    bool has_on_off = false;
+    for (int i = 0; i < simple_desc->app_input_cluster_count; i++) {
+        uint16_t cluster_id = simple_desc->app_cluster_list[i];
+        ESP_LOGD(TAG, "  Input cluster[%d]: 0x%04x", i, cluster_id);
+        if (cluster_id == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
+            has_on_off = true;
+            ESP_LOGI(TAG, "  Found ON_OFF cluster on endpoint %d!", endpoint);
+            break;
+        }
+    }
+
+    if (has_on_off && s_pending_discovery.pending) {
+        // Found an endpoint with ON_OFF cluster - add device
+        ESP_LOGI(TAG, "Adding device 0x%016llX with endpoint %d",
+                 (unsigned long long)s_pending_discovery.ieee_addr, endpoint);
+
+        device_manager_add(s_pending_discovery.ieee_addr, endpoint, NULL, NULL);
+        s_pending_discovery.pending = false;
+
+        // Check device type for logging
+        if (simple_desc->app_device_id == ESP_ZB_HA_ON_OFF_LIGHT_DEVICE_ID) {
+            ESP_LOGI(TAG, "Device type: ON_OFF_LIGHT");
+        } else if (simple_desc->app_device_id == ESP_ZB_HA_ON_OFF_SWITCH_DEVICE_ID) {
+            ESP_LOGI(TAG, "Device type: ON_OFF_SWITCH");
+        } else if (simple_desc->app_device_id == ESP_ZB_HA_DIMMABLE_LIGHT_DEVICE_ID) {
+            ESP_LOGI(TAG, "Device type: DIMMABLE_LIGHT");
+        } else {
+            ESP_LOGI(TAG, "Device type: 0x%04x", simple_desc->app_device_id);
+        }
+    }
 }

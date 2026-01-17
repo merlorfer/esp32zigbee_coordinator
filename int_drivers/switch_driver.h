@@ -79,15 +79,26 @@ typedef struct {
 } switch_func_pair_t;
 
 typedef void (*esp_switch_callback_t)(switch_func_pair_t *param);
+typedef void (*esp_switch_long_press_callback_t)(switch_func_pair_t *param);
+
+/* Long press threshold in milliseconds (3 seconds) */
+#define SWITCH_LONG_PRESS_THRESHOLD_MS  3000
 
 /**
  * @brief init function for switch and callback setup
  *
  * @param button_func_pair      pointer of the button pair.
  * @param button_num            number of button pair.
- * @param cb                    callback pointer.
+ * @param cb                    callback pointer for short press.
  */
 bool switch_driver_init(switch_func_pair_t *button_func_pair, uint8_t button_num, esp_switch_callback_t cb);
+
+/**
+ * @brief Set callback for long press (press held for 3+ seconds)
+ *
+ * @param cb                    callback pointer for long press.
+ */
+void switch_driver_set_long_press_callback(esp_switch_long_press_callback_t cb);
 
 #ifdef __cplusplus
 } // extern "C"

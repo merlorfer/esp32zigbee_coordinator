@@ -9,34 +9,49 @@
 
 static const char *TAG = "BUTTON_TASK";
 
-static button_callback_t s_button_callback = NULL;
+static button_callback_t s_short_press_callback = NULL;
+static button_long_press_callback_t s_long_press_callback = NULL;
 
 static switch_func_pair_t s_button_func_pair[] = {
     {GPIO_INPUT_IO_TOGGLE_SWITCH, SWITCH_ONOFF_TOGGLE_CONTROL}
 };
 
-static void button_press_handler(switch_func_pair_t *param)
+static void button_short_press_handler(switch_func_pair_t *param)
 {
     if (param == NULL) {
         return;
     }
 
-    ESP_LOGI(TAG, "Button pressed on GPIO %lu, function %d",
-             (unsigned long)param->pin, param->func);
+    ESP_LOGI(TAG, "Short press on GPIO %lu", (unsigned long)param->pin);
 
-    if (s_button_callback != NULL) {
-        s_button_callback();
+    if (s_short_press_callback != NULL) {
+        s_short_press_callback();
     }
 }
 
-esp_err_t button_task_init(button_callback_t callback)
+static void button_long_press_handler(switch_func_pair_t *param)
 {
-    s_button_callback = callback;
+    if (param == NULL) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Long press on GPIO %lu", (unsigned long)param->pin);
+
+    if (s_long_press_callback != NULL) {
+        s_long_press_callback();
+    }
+}
+
+esp_err_t button_task_init(button_callback_t short_press_callback,
+                           button_long_press_callback_t long_press_callback)
+{
+    s_short_press_callback = short_press_callback;
+    s_long_press_callback = long_press_callback;
 
     bool ret = switch_driver_init(
         s_button_func_pair,
         sizeof(s_button_func_pair) / sizeof(s_button_func_pair[0]),
-        button_press_handler
+        button_short_press_handler
     );
 
     if (!ret) {
@@ -44,6 +59,11 @@ esp_err_t button_task_init(button_callback_t callback)
         return ESP_FAIL;
     }
 
+    // Set the long press callback
+    switch_driver_set_long_press_callback(button_long_press_handler);
+
     ESP_LOGI(TAG, "Button task initialized on GPIO %d", GPIO_INPUT_IO_TOGGLE_SWITCH);
+    ESP_LOGI(TAG, "  Short press (<3s): Mode toggle");
+    ESP_LOGI(TAG, "  Long press (>=3s): Zigbee pairing");
     return ESP_OK;
 }

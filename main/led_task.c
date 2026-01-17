@@ -11,7 +11,7 @@
 
 static const char *TAG = "LED_TASK";
 
-static led_state_t s_current_state = LED_STATE_RTC_NOT_SET;
+static led_state_t s_current_state = LED_STATE_NORMAL;
 static TaskHandle_t s_led_task_handle = NULL;
 
 static void led_gpio_init(void)
@@ -56,10 +56,10 @@ static void led_task(void *pvParameters)
                 vTaskDelay(pdMS_TO_TICKS(100));
                 break;
 
-            case LED_STATE_RTC_NOT_SET:
-                // Fast blink (250ms ON, 250ms OFF)
+            case LED_STATE_PAIRING:
+                // Fast blink for pairing mode (125ms ON, 125ms OFF = 0.25s cycle)
                 led_set_level(blink_counter % 2 == 0);
-                vTaskDelay(pdMS_TO_TICKS(250));
+                vTaskDelay(pdMS_TO_TICKS(125));
                 blink_counter++;
                 break;
 

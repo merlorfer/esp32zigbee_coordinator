@@ -330,6 +330,7 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
     // Extract IEEE address from URI
     char uri[64];
     strncpy(uri, req->uri, sizeof(uri) - 1);
+    uri[sizeof(uri) - 1] = '\0';
 
     // URI format: /api/devices/0x.../config
     char *addr_start = strstr(uri, "/api/devices/") + 13;
@@ -340,7 +341,9 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
     }
     *addr_end = '\0';
 
-    uint64_t ieee_addr = strtoull(addr_start, NULL, 16);
+    // Use base 0 for auto-detection of hex prefix (0x)
+    uint64_t ieee_addr = strtoull(addr_start, NULL, 0);
+    ESP_LOGI(TAG, "Device config request for IEEE addr: 0x%016llX", (unsigned long long)ieee_addr);
 
     // Read request body
     char buf[512];
@@ -441,11 +444,14 @@ static esp_err_t api_device_delete_handler(httpd_req_t *req)
     // Extract IEEE address from URI
     char uri[64];
     strncpy(uri, req->uri, sizeof(uri) - 1);
+    uri[sizeof(uri) - 1] = '\0';
 
     // URI format: /api/devices/0x...
     char *addr_start = strstr(uri, "/api/devices/") + 13;
 
-    uint64_t ieee_addr = strtoull(addr_start, NULL, 16);
+    // Use base 0 for auto-detection of hex prefix (0x)
+    uint64_t ieee_addr = strtoull(addr_start, NULL, 0);
+    ESP_LOGI(TAG, "Delete device request for IEEE addr: 0x%016llX", (unsigned long long)ieee_addr);
 
     esp_err_t err = device_manager_remove(ieee_addr);
 
@@ -704,6 +710,8 @@ esp_err_t wifi_task_init(void)
 
 esp_err_t wifi_task_start(void)
 {
+    esp_err_t ret;
+
     // Simple Wi-Fi AP configuration - working on ESP32-C6
     wifi_config_t wifi_config = {
         .ap = {
@@ -718,12 +726,26 @@ esp_err_t wifi_task_start(void)
         },
     };
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    ret = esp_wifi_set_mode(WIFI_MODE_AP);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set Wi-Fi mode: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = esp_wifi_set_config(WIFI_IF_AP, &wifi_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set Wi-Fi config: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = esp_wifi_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start Wi-Fi: %s", esp_err_to_name(ret));
+        return ret;
+    }
 
     // Set maximum TX power AFTER wifi_start (20 dBm = 80 in quarter dBm units)
-    esp_err_t ret = esp_wifi_set_max_tx_power(80);
+    ret = esp_wifi_set_max_tx_power(80);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Failed to set TX power: %s", esp_err_to_name(ret));
     }
@@ -756,16 +778,14 @@ esp_err_t wifi_task_stop(void)
 {
     stop_webserver();
 
-    ESP_ERROR_CHECK(esp_wifi_stop());
-    s_wifi_active = false;
-
-    xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT);
-
-    if (s_rtc_initialized) {
-        led_set_state(LED_STATE_NORMAL);
-    } else {
-        led_set_state(LED_STATE_RTC_NOT_SET);
+    esp_err_t ret = esp_wifi_stop();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to stop Wi-Fi: %s", esp_err_to_name(ret));
     }
+
+    s_wifi_active = false;
+    xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT);
+    led_set_state(LED_STATE_NORMAL);
 
     ESP_LOGI(TAG, "Wi-Fi AP stopped");
     return ESP_OK;

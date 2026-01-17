@@ -9,6 +9,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "freertos/timers.h"
 #include "esp_log.h"
 #include "esp_system.h"
 
@@ -35,16 +36,44 @@ SemaphoreHandle_t g_nvs_mutex = NULL;
 SemaphoreHandle_t g_device_mutex = NULL;
 
 static bool s_wifi_mode = true;  // Start in Wi-Fi mode
+static bool s_pairing_mode = false;  // Track if in pairing mode
+static TimerHandle_t s_pairing_timer = NULL;  // Timer for pairing timeout
 
 // ============================================================================
-// Button Callback
+// Pairing Mode Timer Callback
+// ============================================================================
+
+static void pairing_timer_callback(TimerHandle_t timer)
+{
+    ESP_LOGI(TAG, "Pairing mode timeout - disabling permit join");
+    s_pairing_mode = false;
+
+    // Restore LED state based on current mode
+    if (s_wifi_mode) {
+        led_set_state(LED_STATE_WIFI_ACTIVE);
+    } else {
+        led_set_state(LED_STATE_NORMAL);
+    }
+}
+
+// ============================================================================
+// Button Callbacks
 // ============================================================================
 
 static bool s_zigbee_started = false;  // Track if Zigbee task was ever started
 
-static void on_button_press(void)
+static void on_button_short_press(void)
 {
-    ESP_LOGI(TAG, "Button pressed - toggling mode");
+    ESP_LOGI(TAG, "Short press - toggling mode");
+
+    // If in pairing mode, cancel it first
+    if (s_pairing_mode) {
+        ESP_LOGI(TAG, "Cancelling pairing mode");
+        s_pairing_mode = false;
+        if (s_pairing_timer != NULL) {
+            xTimerStop(s_pairing_timer, 0);
+        }
+    }
 
     if (s_wifi_mode) {
         // Switch to Zigbee mode
@@ -64,25 +93,84 @@ static void on_button_press(void)
         xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
         xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT);
 
-        // Set LED state based on RTC
-        if (wifi_task_is_rtc_initialized()) {
-            led_set_state(LED_STATE_NORMAL);
-        } else {
-            led_set_state(LED_STATE_RTC_NOT_SET);
-        }
+        // Set LED state to normal (automation mode)
+        led_set_state(LED_STATE_NORMAL);
     } else {
         // Switch to Wi-Fi mode
-        // NOTE: On ESP32-C6, we can't easily stop Zigbee once started
-        // Wi-Fi may have reduced performance with Zigbee running
+        // NOTE: On ESP32-C6, Wi-Fi and Zigbee share the radio - coexistence enabled
         ESP_LOGI(TAG, "Switching to Wi-Fi configuration mode");
         scheduler_task_stop();
-        wifi_task_start();
-        s_wifi_mode = true;
 
-        xEventGroupSetBits(g_event_group, EVENT_WIFI_MODE_BIT);
-        xEventGroupClearBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
+        // Give the system time to settle before starting Wi-Fi
+        // This helps with radio coexistence on ESP32-C6
+        vTaskDelay(pdMS_TO_TICKS(500));
 
-        led_set_state(LED_STATE_WIFI_ACTIVE);
+        esp_err_t ret = wifi_task_start();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start Wi-Fi, retrying...");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            ret = wifi_task_start();
+        }
+
+        if (ret == ESP_OK) {
+            s_wifi_mode = true;
+            xEventGroupSetBits(g_event_group, EVENT_WIFI_MODE_BIT);
+            xEventGroupClearBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
+            led_set_state(LED_STATE_WIFI_ACTIVE);
+        } else {
+            ESP_LOGE(TAG, "Wi-Fi start failed after retry");
+            led_set_state(LED_STATE_ERROR);
+        }
+    }
+}
+
+static void on_button_long_press(void)
+{
+    ESP_LOGI(TAG, "Long press - entering Zigbee pairing mode");
+
+    // Zigbee must be running for pairing
+    if (!s_zigbee_started) {
+        ESP_LOGW(TAG, "Zigbee not started - switch to automation mode first");
+        // Flash error indication
+        led_set_state(LED_STATE_ERROR);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (s_wifi_mode) {
+            led_set_state(LED_STATE_WIFI_ACTIVE);
+        } else {
+            led_set_state(LED_STATE_NORMAL);
+        }
+        return;
+    }
+
+    // Enable permit join for 60 seconds
+    esp_err_t ret = zigbee_permit_join(ZIGBEE_PERMIT_JOIN_TIME);
+    if (ret == ESP_OK) {
+        s_pairing_mode = true;
+        led_set_state(LED_STATE_PAIRING);
+        ESP_LOGI(TAG, "Zigbee pairing enabled for %d seconds", ZIGBEE_PERMIT_JOIN_TIME);
+
+        // Start timer to auto-disable pairing mode
+        if (s_pairing_timer == NULL) {
+            s_pairing_timer = xTimerCreate(
+                "pairing_timer",
+                pdMS_TO_TICKS(ZIGBEE_PERMIT_JOIN_TIME * 1000),
+                pdFALSE,  // One-shot timer
+                NULL,
+                pairing_timer_callback
+            );
+        }
+        if (s_pairing_timer != NULL) {
+            xTimerStart(s_pairing_timer, 0);
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to enable Zigbee pairing: %s", esp_err_to_name(ret));
+        led_set_state(LED_STATE_ERROR);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (s_wifi_mode) {
+            led_set_state(LED_STATE_WIFI_ACTIVE);
+        } else {
+            led_set_state(LED_STATE_NORMAL);
+        }
     }
 }
 
@@ -158,7 +246,7 @@ void app_main(void)
     ESP_ERROR_CHECK(led_task_init());
 
     // Initialize button task
-    ESP_ERROR_CHECK(button_task_init(on_button_press));
+    ESP_ERROR_CHECK(button_task_init(on_button_short_press, on_button_long_press));
 
     // Initialize Wi-Fi task
     ESP_ERROR_CHECK(wifi_task_init());
@@ -184,7 +272,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Wi-Fi SSID: %s", WIFI_SSID);
     ESP_LOGI(TAG, "Wi-Fi Password: %s", WIFI_PASSWORD);
     ESP_LOGI(TAG, "Web interface: http://%s", WIFI_AP_IP);
-    ESP_LOGI(TAG, "Press button on GPIO %d to toggle mode", GPIO_BUTTON_TOGGLE);
+    ESP_LOGI(TAG, "Button GPIO %d: short press=toggle mode, long press=pairing", GPIO_BUTTON_TOGGLE);
     ESP_LOGI(TAG, "========================================");
 
     // Main task can now idle - all work is done in other tasks

@@ -17,7 +17,10 @@
       "Bash(cmd.exe //c \"D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01\\\\build.bat\")",
       "Bash(ls:*)",
       "Bash(cmd.exe //c \"dir D:\\\\Programing\\\\esp-idf\\\\v5.5.1\\\\esp-idf\\\\export*\")",
-      "Bash(cmd.exe //c \"D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01\\\\flash.bat\")"
+      "Bash(cmd.exe //c \"D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01\\\\flash.bat\")",
+      "Bash(cmd /c \"cd /d D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01 && D:\\\\Programing\\\\esp-idf\\\\v5.5.1\\\\esp-idf\\\\export.bat >nul 2>&1 && idf.py build\")",
+      "Bash(cmd /c \"D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01\\\\build.bat\")",
+      "Bash(MSYSTEM= MSYS= CYGWIN= cmd /c \"D:/Programing/esp-idf/v5.5.1/esp-idf/export.bat && idf.py build\")"
     ]
   }
 }

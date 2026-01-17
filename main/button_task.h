@@ -18,11 +18,18 @@ extern "C" {
 typedef void (*button_callback_t)(void);
 
 /**
+ * @brief Long press callback type
+ */
+typedef void (*button_long_press_callback_t)(void);
+
+/**
  * @brief Initialize button task
- * @param callback Function to call when button is pressed
+ * @param short_press_callback Function to call on short button press (< 3 sec)
+ * @param long_press_callback Function to call on long button press (>= 3 sec)
  * @return ESP_OK on success
  */
-esp_err_t button_task_init(button_callback_t callback);
+esp_err_t button_task_init(button_callback_t short_press_callback,
+                           button_long_press_callback_t long_press_callback);
 
 #ifdef __cplusplus
 }

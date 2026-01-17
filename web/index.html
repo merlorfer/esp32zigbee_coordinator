@@ -80,12 +80,17 @@
                 <button onclick="saveGlobalConfig()" class="btn btn-primary">Beallitasok mentese</button>
             </section>
 
-            <!-- Start Automation Section -->
+            <!-- Mode Control Info Section -->
             <section class="card action-card">
-                <button onclick="startAutomation()" class="btn btn-success btn-large" id="automation-btn">
-                    Automatizacio inditasa
-                </button>
-                <p class="hint" id="automation-hint">A Wi-Fi AP leall es az automatizacio aktivalodik</p>
+                <h2>Vezerles</h2>
+                <div class="info-box">
+                    <p><strong>GPIO9 gomb hasznalata:</strong></p>
+                    <ul class="info-list">
+                        <li><strong>Rovid nyomas (&lt;3 mp):</strong> Valtogatas Wi-Fi es Automatizacio kozott</li>
+                        <li><strong>Hosszu nyomas (&ge;3 mp):</strong> Zigbee parositas aktivitas (60 mp)</li>
+                    </ul>
+                </div>
+                <p class="hint">Az automatizacio elinditasahoz nyomd meg roviden a gombot az ESP-n</p>
             </section>
         </main>
 

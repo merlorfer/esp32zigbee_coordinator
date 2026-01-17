@@ -167,26 +167,8 @@ async function loadDevices() {
         const data = await response.json();
         devices = data.devices || [];
         renderDevices();
-        updateAutomationButton();
     } catch (error) {
         console.error('Device load error:', error);
-    }
-}
-
-function updateAutomationButton() {
-    const btn = document.getElementById('automation-btn');
-    const hint = document.getElementById('automation-hint');
-
-    if (devices.length === 0) {
-        btn.disabled = true;
-        btn.classList.add('btn-disabled');
-        hint.textContent = 'Nincs csatlakozott eszkoz - nem indithato az automatizacio';
-        hint.classList.add('warning');
-    } else {
-        btn.disabled = false;
-        btn.classList.remove('btn-disabled');
-        hint.textContent = 'A Wi-Fi AP leall es az automatizacio aktivalodik';
-        hint.classList.remove('warning');
     }
 }
 
@@ -336,38 +318,6 @@ async function saveGlobalConfig() {
         }
     } catch (error) {
         console.error('Save config error:', error);
-        showToast('Kapcsolati hiba', true);
-    }
-}
-
-async function startAutomation() {
-    // Check if there are devices
-    if (devices.length === 0) {
-        showToast('Nincs csatlakozott eszkoz - nem indithato az automatizacio!', true);
-        return;
-    }
-
-    if (!confirm('A Wi-Fi AP leall es az automatizacio aktivalodik. Folytatja?')) {
-        return;
-    }
-
-    const maintain = document.getElementById('wifi-maintain').checked;
-
-    try {
-        const response = await fetch('/api/wifi/shutdown', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                wifi_on_behavior: maintain ? 'maintain_state' : 'power_off'
-            })
-        });
-
-        const data = await response.json();
-        if (data.success) {
-            showToast('Automatizacio aktivalva - a kapcsolat hamarosan megszakad');
-        }
-    } catch (error) {
-        console.error('Start automation error:', error);
         showToast('Kapcsolati hiba', true);
     }
 }

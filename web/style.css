@@ -539,6 +539,33 @@ select:focus {
     font-weight: 500;
 }
 
+/* Info Box */
+.info-box {
+    background-color: var(--bg-color);
+    border-left: 4px solid var(--primary-color);
+    padding: 15px;
+    margin: 15px 0;
+    text-align: left;
+}
+
+.info-box p {
+    margin-bottom: 10px;
+}
+
+.info-list {
+    list-style: none;
+    padding-left: 0;
+}
+
+.info-list li {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.info-list li:last-child {
+    border-bottom: none;
+}
+
 /* Utility */
 .hidden {
     display: none !important;

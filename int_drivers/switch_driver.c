@@ -55,8 +55,10 @@
 static QueueHandle_t gpio_evt_queue = NULL;
 /* button function pair, should be defined in switch example source file */
 static switch_func_pair_t *switch_func_pair;
-/* call back function pointer */
+/* call back function pointer for short press */
 static esp_switch_callback_t func_ptr;
+/* call back function pointer for long press */
+static esp_switch_long_press_callback_t long_press_func_ptr = NULL;
 /* which button is pressed */
 static uint8_t switch_num;
 static const char *TAG = "ESP_ZB_SWITCH";
@@ -84,6 +86,7 @@ static void switch_driver_gpios_intr_enabled(bool enabled)
 
 /**
  * @brief Tasks for checking the button event and debounce the switch state
+ *        with support for long press detection
  *
  * @param arg      Unused value.
  */
@@ -93,27 +96,51 @@ static void switch_driver_button_detected(void *arg)
     switch_func_pair_t button_func_pair;
     static switch_state_t switch_state = SWITCH_IDLE;
     bool evt_flag = false;
+    TickType_t press_start_time = 0;
+    bool long_press_triggered = false;
 
     for (;;) {
         /* check if there is any queue received, if yes read out the button_func_pair */
         if (xQueueReceive(gpio_evt_queue, &button_func_pair, portMAX_DELAY)) {
-            io_num =  button_func_pair.pin;
+            io_num = button_func_pair.pin;
             switch_driver_gpios_intr_enabled(false);
             evt_flag = true;
+            long_press_triggered = false;
         }
         while (evt_flag) {
             bool value = gpio_get_level(io_num);
             switch (switch_state) {
             case SWITCH_IDLE:
-                switch_state = (value == GPIO_INPUT_LEVEL_ON) ? SWITCH_PRESS_DETECTED : SWITCH_IDLE;
+                if (value == GPIO_INPUT_LEVEL_ON) {
+                    switch_state = SWITCH_PRESS_DETECTED;
+                    press_start_time = xTaskGetTickCount();
+                    long_press_triggered = false;
+                }
                 break;
             case SWITCH_PRESS_DETECTED:
-                switch_state = (value == GPIO_INPUT_LEVEL_ON) ? SWITCH_PRESS_DETECTED : SWITCH_RELEASE_DETECTED;
+                if (value == GPIO_INPUT_LEVEL_ON) {
+                    /* Button still pressed - check for long press */
+                    TickType_t press_duration = (xTaskGetTickCount() - press_start_time) * portTICK_PERIOD_MS;
+                    if (!long_press_triggered && press_duration >= SWITCH_LONG_PRESS_THRESHOLD_MS) {
+                        /* Long press detected */
+                        if (long_press_func_ptr != NULL) {
+                            ESP_LOGI(TAG, "Long press detected (%lu ms)", (unsigned long)press_duration);
+                            (*long_press_func_ptr)(&button_func_pair);
+                        }
+                        long_press_triggered = true;
+                    }
+                } else {
+                    switch_state = SWITCH_RELEASE_DETECTED;
+                }
                 break;
             case SWITCH_RELEASE_DETECTED:
                 switch_state = SWITCH_IDLE;
-                /* callback to button_handler */
-                (*func_ptr)(&button_func_pair);
+                /* Only call short press callback if long press wasn't triggered */
+                if (!long_press_triggered && func_ptr != NULL) {
+                    TickType_t press_duration = (xTaskGetTickCount() - press_start_time) * portTICK_PERIOD_MS;
+                    ESP_LOGI(TAG, "Short press detected (%lu ms)", (unsigned long)press_duration);
+                    (*func_ptr)(&button_func_pair);
+                }
                 break;
             default:
                 break;
@@ -175,4 +202,9 @@ bool switch_driver_init(switch_func_pair_t *button_func_pair, uint8_t button_num
     }
     func_ptr = cb;
     return true;
+}
+
+void switch_driver_set_long_press_callback(esp_switch_long_press_callback_t cb)
+{
+    long_press_func_ptr = cb;
 }

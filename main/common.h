@@ -170,7 +170,7 @@ typedef struct {
 typedef enum {
     LED_STATE_NORMAL,         // 1 sec blink - automation mode active
     LED_STATE_WIFI_ACTIVE,    // Solid ON - Wi-Fi AP active
-    LED_STATE_RTC_NOT_SET,    // Fast blink 0.5 sec - RTC not initialized
+    LED_STATE_PAIRING,        // Fast blink 0.25 sec - Zigbee pairing mode
     LED_STATE_ERROR           // 3x fast blink, pause - error occurred
 } led_state_t;
 
