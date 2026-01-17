@@ -13,7 +13,6 @@
 #include "esp_zigbee_core.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "zcl/esp_zigbee_zcl_common.h"
-#include "esp_ieee802154.h"
 #include <string.h>
 #include <inttypes.h>
 
@@ -314,6 +313,33 @@ static void zigbee_task(void *pvParameters)
     esp_zb_stack_main_loop();
 }
 
+// Internal helper to resend ZCL command without resetting pending state (for retries)
+static void resend_zcl_on_off_cmd(uint64_t ieee_addr, uint8_t endpoint, uint8_t on_off_cmd_id)
+{
+    esp_zb_ieee_addr_t ieee;
+    for (int i = 0; i < 8; i++) {
+        ieee[i] = (ieee_addr >> (i * 8)) & 0xFF;
+    }
+
+    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee);
+    if (short_addr == 0xFFFF) {
+        ESP_LOGW(TAG, "Device not found in network for retry");
+        return;
+    }
+
+    esp_zb_zcl_on_off_cmd_t cmd = {
+        .zcl_basic_cmd = {
+            .dst_addr_u.addr_short = short_addr,
+            .dst_endpoint = endpoint,
+            .src_endpoint = 1,
+        },
+        .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+        .on_off_cmd_id = on_off_cmd_id,
+    };
+
+    esp_zb_zcl_on_off_cmd_req(&cmd);
+}
+
 static void zigbee_cmd_processor_task(void *pvParameters)
 {
     cmd_queue_msg_t msg;
@@ -336,16 +362,23 @@ static void zigbee_cmd_processor_task(void *pvParameters)
             ESP_LOGI(TAG, "Processing %s command for device %s (ep=%d)",
                      cmd_name, cmd_ieee_str, msg.endpoint);
 
+            esp_err_t send_result = ESP_OK;
             switch (msg.cmd) {
             case CMD_ON:
-                zigbee_send_on(msg.ieee_addr, msg.endpoint);
+                send_result = zigbee_send_on(msg.ieee_addr, msg.endpoint);
                 break;
             case CMD_OFF:
-                zigbee_send_off(msg.ieee_addr, msg.endpoint);
+                send_result = zigbee_send_off(msg.ieee_addr, msg.endpoint);
                 break;
             case CMD_TOGGLE:
-                zigbee_send_toggle(msg.ieee_addr, msg.endpoint);
+                send_result = zigbee_send_toggle(msg.ieee_addr, msg.endpoint);
                 break;
+            }
+
+            // If initial send failed (device not found), skip retries
+            if (send_result != ESP_OK) {
+                ESP_LOGW(TAG, "Initial send failed, skipping retries");
+                continue;
             }
 
             // Wait for response or timeout
@@ -373,17 +406,21 @@ static void zigbee_cmd_processor_task(void *pvParameters)
                 ESP_LOGI(TAG, "Retrying %s command (%d/%d)",
                          cmd_name, s_pending_cmd.retry_count, ZIGBEE_RETRY_COUNT);
 
+                // Use internal resend function that doesn't reset pending state
+                uint8_t zcl_cmd_id;
                 switch (msg.cmd) {
                 case CMD_ON:
-                    zigbee_send_on(msg.ieee_addr, msg.endpoint);
+                    zcl_cmd_id = ESP_ZB_ZCL_CMD_ON_OFF_ON_ID;
                     break;
                 case CMD_OFF:
-                    zigbee_send_off(msg.ieee_addr, msg.endpoint);
+                    zcl_cmd_id = ESP_ZB_ZCL_CMD_ON_OFF_OFF_ID;
                     break;
                 case CMD_TOGGLE:
-                    zigbee_send_toggle(msg.ieee_addr, msg.endpoint);
+                default:
+                    zcl_cmd_id = ESP_ZB_ZCL_CMD_ON_OFF_TOGGLE_ID;
                     break;
                 }
+                resend_zcl_on_off_cmd(msg.ieee_addr, msg.endpoint, zcl_cmd_id);
 
                 vTaskDelay(pdMS_TO_TICKS(ZIGBEE_CMD_TIMEOUT_MS));
             }
@@ -481,6 +518,14 @@ esp_err_t zigbee_send_on(uint64_t ieee_addr, uint8_t endpoint)
     }
 
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee);
+    char on_ieee_str[24];
+    format_ieee_addr_u64(on_ieee_str, sizeof(on_ieee_str), ieee_addr);
+
+    if (short_addr == 0xFFFF) {
+        ESP_LOGW(TAG, "Device %s not found in network (short addr unknown)", on_ieee_str);
+        s_pending_cmd.pending = false;
+        return ESP_ERR_NOT_FOUND;
+    }
 
     esp_zb_zcl_on_off_cmd_t cmd = {
         .zcl_basic_cmd = {
@@ -493,9 +538,7 @@ esp_err_t zigbee_send_on(uint64_t ieee_addr, uint8_t endpoint)
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
-    char on_ieee_str[24];
-    format_ieee_addr_u64(on_ieee_str, sizeof(on_ieee_str), ieee_addr);
-    ESP_LOGI(TAG, "ON command sent to %s", on_ieee_str);
+    ESP_LOGI(TAG, "ON command sent to %s (short: 0x%04X)", on_ieee_str, short_addr);
 
     return ESP_OK;
 }
@@ -518,6 +561,14 @@ esp_err_t zigbee_send_off(uint64_t ieee_addr, uint8_t endpoint)
     }
 
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee);
+    char off_ieee_str[24];
+    format_ieee_addr_u64(off_ieee_str, sizeof(off_ieee_str), ieee_addr);
+
+    if (short_addr == 0xFFFF) {
+        ESP_LOGW(TAG, "Device %s not found in network (short addr unknown)", off_ieee_str);
+        s_pending_cmd.pending = false;
+        return ESP_ERR_NOT_FOUND;
+    }
 
     esp_zb_zcl_on_off_cmd_t cmd = {
         .zcl_basic_cmd = {
@@ -530,9 +581,7 @@ esp_err_t zigbee_send_off(uint64_t ieee_addr, uint8_t endpoint)
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
-    char off_ieee_str[24];
-    format_ieee_addr_u64(off_ieee_str, sizeof(off_ieee_str), ieee_addr);
-    ESP_LOGI(TAG, "OFF command sent to %s", off_ieee_str);
+    ESP_LOGI(TAG, "OFF command sent to %s (short: 0x%04X)", off_ieee_str, short_addr);
 
     return ESP_OK;
 }
@@ -555,6 +604,14 @@ esp_err_t zigbee_send_toggle(uint64_t ieee_addr, uint8_t endpoint)
     }
 
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee);
+    char toggle_ieee_str[24];
+    format_ieee_addr_u64(toggle_ieee_str, sizeof(toggle_ieee_str), ieee_addr);
+
+    if (short_addr == 0xFFFF) {
+        ESP_LOGW(TAG, "Device %s not found in network (short addr unknown)", toggle_ieee_str);
+        s_pending_cmd.pending = false;
+        return ESP_ERR_NOT_FOUND;
+    }
 
     esp_zb_zcl_on_off_cmd_t cmd = {
         .zcl_basic_cmd = {
@@ -567,7 +624,7 @@ esp_err_t zigbee_send_toggle(uint64_t ieee_addr, uint8_t endpoint)
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
-    ESP_LOGI(TAG, "TOGGLE command sent to 0x%016" PRIX64, ieee_addr);
+    ESP_LOGI(TAG, "TOGGLE command sent to %s (short: 0x%04X)", toggle_ieee_str, short_addr);
 
     return ESP_OK;
 }
@@ -579,7 +636,7 @@ bool zigbee_is_running(void)
 
 esp_err_t zigbee_task_stop(void)
 {
-    ESP_LOGI(TAG, "Stopping Zigbee radio operations");
+    ESP_LOGI(TAG, "Stopping Zigbee operations for Wi-Fi mode");
 
     if (!s_zigbee_running) {
         ESP_LOGW(TAG, "Zigbee already stopped");
@@ -600,32 +657,31 @@ esp_err_t zigbee_task_stop(void)
         xEventGroupClearBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
     }
 
-    // Disable IEEE 802.15.4 radio to free up for Wi-Fi
-    // This should help with the radio sharing on ESP32-C6
-    esp_err_t ret = esp_ieee802154_disable();
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "IEEE 802.15.4 radio disabled");
-    } else {
-        ESP_LOGW(TAG, "Failed to disable IEEE 802.15.4 radio: %s", esp_err_to_name(ret));
+    // Suspend the Zigbee task to prevent its main loop from running
+    // This is necessary because the Zigbee stack's interrupt management
+    // can conflict with Wi-Fi when both are running
+    if (s_zigbee_task_handle != NULL) {
+        ESP_LOGI(TAG, "Suspending Zigbee task");
+        vTaskSuspend(s_zigbee_task_handle);
     }
 
-    ESP_LOGI(TAG, "Zigbee radio stopped - Wi-Fi can now use the radio");
+    ESP_LOGI(TAG, "Zigbee task suspended - Wi-Fi can now be used");
 
     return ESP_OK;
 }
 
 esp_err_t zigbee_task_resume(void)
 {
-    ESP_LOGI(TAG, "Resuming Zigbee radio operations");
+    ESP_LOGI(TAG, "Resuming Zigbee operations");
 
-    // Re-enable IEEE 802.15.4 radio
-    esp_err_t ret = esp_ieee802154_enable();
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "IEEE 802.15.4 radio enabled");
-    } else {
-        ESP_LOGW(TAG, "Failed to enable IEEE 802.15.4 radio: %s", esp_err_to_name(ret));
-        return ret;
+    // Resume the Zigbee task first
+    if (s_zigbee_task_handle != NULL) {
+        ESP_LOGI(TAG, "Resuming Zigbee task");
+        vTaskResume(s_zigbee_task_handle);
     }
+
+    // Give the task a moment to resume
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     // Mark Zigbee as running
     s_zigbee_running = true;
@@ -635,7 +691,11 @@ esp_err_t zigbee_task_resume(void)
         xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
     }
 
-    ESP_LOGI(TAG, "Zigbee radio resumed");
+    // NOTE: Since we just suspended/resumed the task, the Zigbee network
+    // state should still be intact and devices should respond immediately
+    // No need for network steering - the coordinator was never actually offline
+
+    ESP_LOGI(TAG, "Zigbee task resumed and ready");
 
     return ESP_OK;
 }

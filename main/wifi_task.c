@@ -832,19 +832,16 @@ esp_err_t wifi_task_start(void)
         },
     };
 
-    // If Wi-Fi was previously running, do a full restart
-    // This is important after switching from Zigbee mode on ESP32-C6
-    wifi_mode_t mode;
-    if (esp_wifi_get_mode(&mode) == ESP_OK && mode != WIFI_MODE_NULL) {
-        ESP_LOGI(TAG, "Stopping Wi-Fi for clean restart...");
-        esp_wifi_stop();
-        vTaskDelay(pdMS_TO_TICKS(200));
+    // Always do a full restart when switching from Zigbee on ESP32-C6
+    // This ensures the radio is properly reconfigured for WiFi
+    ESP_LOGI(TAG, "Stopping Wi-Fi for clean restart...");
+    esp_wifi_stop();
+    vTaskDelay(pdMS_TO_TICKS(300));
 
-        // Restore Wi-Fi to clear any stale state from coexistence
-        ESP_LOGI(TAG, "Restoring Wi-Fi state...");
-        esp_wifi_restore();
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
+    // Restore Wi-Fi to clear any stale state from coexistence
+    ESP_LOGI(TAG, "Restoring Wi-Fi state...");
+    esp_wifi_restore();
+    vTaskDelay(pdMS_TO_TICKS(200));
 
     ret = esp_wifi_set_mode(WIFI_MODE_AP);
     if (ret != ESP_OK) {

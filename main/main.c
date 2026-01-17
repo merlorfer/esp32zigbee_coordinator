@@ -78,7 +78,14 @@ static void on_button_short_press(void)
     if (s_wifi_mode) {
         // Switch to Zigbee mode
         ESP_LOGI(TAG, "Switching to Zigbee automation mode");
+
         wifi_task_stop();
+
+        // Clear any old commands in the queue (e.g., power_off_all from WiFi start)
+        cmd_queue_msg_t dummy_msg;
+        while (xQueueReceive(g_cmd_queue, &dummy_msg, 0) == pdTRUE) {
+            ESP_LOGD(TAG, "Cleared old command from queue");
+        }
 
         // Start Zigbee task if not already started
         if (!s_zigbee_started) {
@@ -91,47 +98,51 @@ static void on_button_short_press(void)
             zigbee_task_resume();
         }
 
-        // Process any pending leave requests from devices deleted while in Wi-Fi mode
-        // Wait a bit for Zigbee to fully initialize
+        // Give a short delay for mode transition to complete
+        // Since we no longer disable the radio, the network should be instantly available
         vTaskDelay(pdMS_TO_TICKS(500));
+
+        // Process any pending leave requests from devices deleted while in Wi-Fi mode
         wifi_task_process_pending_leave();
 
         scheduler_task_start();
         s_wifi_mode = false;
 
+        // LED changes only after Zigbee mode is fully active
+        led_set_state(LED_STATE_NORMAL);
+
         xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
         xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT);
-
-        // Set LED state to normal (automation mode)
-        led_set_state(LED_STATE_NORMAL);
     } else {
         // Switch to Wi-Fi mode
         // NOTE: On ESP32-C6, Wi-Fi and Zigbee share the radio
         ESP_LOGI(TAG, "Switching to Wi-Fi configuration mode");
+
         scheduler_task_stop();
 
-        // Stop Zigbee radio to free up the shared radio for Wi-Fi
+        // Pause Zigbee command processing (Wi-Fi and Zigbee coexist via TDM)
         if (s_zigbee_started) {
             zigbee_task_stop();
         }
 
-        // Give the system time to settle before starting Wi-Fi
-        // Longer delay needed after IEEE 802.15.4 radio was active
-        ESP_LOGI(TAG, "Waiting for radio to settle...");
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        // Short delay for mode transition
+        vTaskDelay(pdMS_TO_TICKS(300));
 
         esp_err_t ret = wifi_task_start();
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to start Wi-Fi, retrying...");
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            ESP_LOGE(TAG, "Failed to start Wi-Fi, retrying with longer delay...");
+            vTaskDelay(pdMS_TO_TICKS(2000));
             ret = wifi_task_start();
         }
 
+        // Give the WiFi AP more time to become visible
         if (ret == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(500));
             s_wifi_mode = true;
             xEventGroupSetBits(g_event_group, EVENT_WIFI_MODE_BIT);
             xEventGroupClearBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
             led_set_state(LED_STATE_WIFI_ACTIVE);
+            ESP_LOGI(TAG, "Wi-Fi AP should now be visible");
         } else {
             ESP_LOGE(TAG, "Wi-Fi start failed after retry");
             led_set_state(LED_STATE_ERROR);
