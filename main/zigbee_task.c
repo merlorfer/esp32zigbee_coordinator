@@ -13,6 +13,7 @@
 #include "esp_zigbee_core.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "zcl/esp_zigbee_zcl_common.h"
+#include "esp_ieee802154.h"
 #include <string.h>
 #include <inttypes.h>
 
@@ -657,15 +658,27 @@ esp_err_t zigbee_task_stop(void)
         xEventGroupClearBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
     }
 
-    // Suspend the Zigbee task to prevent its main loop from running
-    // This is necessary because the Zigbee stack's interrupt management
-    // can conflict with Wi-Fi when both are running
+    // Disable the radio FIRST - this will cause the Zigbee main loop to idle
+    esp_err_t ret = esp_ieee802154_disable();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "IEEE 802.15.4 radio disabled");
+    } else {
+        ESP_LOGW(TAG, "Failed to disable radio: %s", esp_err_to_name(ret));
+    }
+
+    // Wait for the Zigbee task to reach an idle state (no radio means no work)
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    // Now suspend the task - it should be in an idle state, not holding locks
     if (s_zigbee_task_handle != NULL) {
         ESP_LOGI(TAG, "Suspending Zigbee task");
         vTaskSuspend(s_zigbee_task_handle);
     }
 
-    ESP_LOGI(TAG, "Zigbee task suspended - Wi-Fi can now be used");
+    // Additional delay for radio to be fully released
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    ESP_LOGI(TAG, "Zigbee stopped - Wi-Fi can now use the radio");
 
     return ESP_OK;
 }
@@ -674,14 +687,22 @@ esp_err_t zigbee_task_resume(void)
 {
     ESP_LOGI(TAG, "Resuming Zigbee operations");
 
-    // Resume the Zigbee task first
+    // Enable the radio FIRST (while task is still suspended)
+    esp_err_t ret = esp_ieee802154_enable();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "IEEE 802.15.4 radio enabled");
+    } else {
+        ESP_LOGW(TAG, "Failed to enable radio: %s", esp_err_to_name(ret));
+    }
+
+    // Wait for radio to be fully ready before resuming the task
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // Now resume the Zigbee task - radio is ready for it
     if (s_zigbee_task_handle != NULL) {
         ESP_LOGI(TAG, "Resuming Zigbee task");
         vTaskResume(s_zigbee_task_handle);
     }
-
-    // Give the task a moment to resume
-    vTaskDelay(pdMS_TO_TICKS(100));
 
     // Mark Zigbee as running
     s_zigbee_running = true;
@@ -691,11 +712,14 @@ esp_err_t zigbee_task_resume(void)
         xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
     }
 
-    // NOTE: Since we just suspended/resumed the task, the Zigbee network
-    // state should still be intact and devices should respond immediately
-    // No need for network steering - the coordinator was never actually offline
+    // Short delay before network steering
+    vTaskDelay(pdMS_TO_TICKS(100));
 
-    ESP_LOGI(TAG, "Zigbee task resumed and ready");
+    // Network steering runs asynchronously in the Zigbee task's main loop
+    ESP_LOGI(TAG, "Starting network steering to restore device connections...");
+    esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+
+    ESP_LOGI(TAG, "Zigbee task resumed");
 
     return ESP_OK;
 }

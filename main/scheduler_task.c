@@ -22,6 +22,8 @@ extern QueueHandle_t g_cmd_queue;
 static TaskHandle_t s_scheduler_task_handle = NULL;
 static bool s_scheduler_active = false;
 static uint32_t s_delay_cycle_start = 0;
+static bool s_last_delay_state = false;  // Track last sent delay state to detect transitions
+static bool s_delay_first_run = true;    // Force first command on startup
 
 /* Helper function to format IEEE address as hex string */
 static void format_ieee_addr_str(char *buf, size_t buf_size, uint64_t ieee_addr)
@@ -70,36 +72,33 @@ static void process_fixed_time_mode(device_config_t *dev, struct tm *current_tim
     for (int i = 0; i < dev->time_pair_count; i++) {
         time_pair_t *pair = &dev->time_pairs[i];
 
-        // Check ON time
+        // Check ON time - always send command regardless of saved state
+        // (device state can change via physical switch without our knowledge)
         if (time_matches(&pair->on_time, current_time)) {
-            if (!dev->current_state) {
-                char ieee_str[24];
-                format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
-                ESP_LOGI(TAG, "Fixed time ON triggered for device %s", ieee_str);
+            char ieee_str[24];
+            format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
+            ESP_LOGI(TAG, "Fixed time ON triggered for device %s", ieee_str);
 
-                cmd_queue_msg_t msg = {
-                    .ieee_addr = dev->ieee_addr,
-                    .endpoint = dev->endpoint,
-                    .cmd = CMD_ON
-                };
-                xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
-            }
+            cmd_queue_msg_t msg = {
+                .ieee_addr = dev->ieee_addr,
+                .endpoint = dev->endpoint,
+                .cmd = CMD_ON
+            };
+            xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
         }
 
-        // Check OFF time
+        // Check OFF time - always send command regardless of saved state
         if (time_matches(&pair->off_time, current_time)) {
-            if (dev->current_state) {
-                char ieee_str[24];
-                format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
-                ESP_LOGI(TAG, "Fixed time OFF triggered for device %s", ieee_str);
+            char ieee_str[24];
+            format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
+            ESP_LOGI(TAG, "Fixed time OFF triggered for device %s", ieee_str);
 
-                cmd_queue_msg_t msg = {
-                    .ieee_addr = dev->ieee_addr,
-                    .endpoint = dev->endpoint,
-                    .cmd = CMD_OFF
-                };
-                xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
-            }
+            cmd_queue_msg_t msg = {
+                .ieee_addr = dev->ieee_addr,
+                .endpoint = dev->endpoint,
+                .cmd = CMD_OFF
+            };
+            xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
         }
     }
 }
@@ -111,11 +110,9 @@ static void process_fixed_time_mode(device_config_t *dev, struct tm *current_tim
 static void process_delay_mode(device_config_t *dev)
 {
     if (!dev->enabled) {
-        ESP_LOGW(TAG, "Delay mode: device not enabled");
         return;
     }
     if (s_delay_cycle_start == 0) {
-        ESP_LOGW(TAG, "Delay mode: cycle not started");
         return;
     }
 
@@ -123,7 +120,6 @@ static void process_delay_mode(device_config_t *dev)
     uint32_t cycle_length = dev->delay_on_minutes + dev->delay_duration_minutes;
 
     if (cycle_length == 0) {
-        ESP_LOGW(TAG, "Delay mode: cycle_length is 0");
         return;
     }
 
@@ -135,8 +131,11 @@ static void process_delay_mode(device_config_t *dev)
     // delay_on_minutes to cycle_length-1: ON (active)
     bool expected_state = (position_in_cycle >= dev->delay_on_minutes);
 
-    // Check if state change is needed
-    if (expected_state != dev->current_state) {
+    // Send command when the expected state changes (based on cycle position, not device state)
+    // This ensures commands are sent even if device state was changed manually
+    // Also send on first run after scheduler start/resume
+    if (expected_state != s_last_delay_state || s_delay_first_run) {
+        s_delay_first_run = false;
         char ieee_str[24];
         format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
 
@@ -162,9 +161,8 @@ static void process_delay_mode(device_config_t *dev)
         };
         xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
 
-        // Update device state locally (will be confirmed by Zigbee response)
-        dev->current_state = expected_state;
-        device_manager_update(dev->ieee_addr, dev);
+        // Track what we sent (not the device state)
+        s_last_delay_state = expected_state;
     }
 }
 
@@ -255,6 +253,7 @@ esp_err_t scheduler_task_start(void)
     if (s_scheduler_task_handle != NULL) {
         s_scheduler_active = true;
         s_delay_cycle_start = (uint32_t)time(NULL);
+        s_delay_first_run = true;  // Force first command on resume
         ESP_LOGI(TAG, "Scheduler task resumed, delay cycle reset");
         return ESP_OK;
     }
@@ -276,6 +275,7 @@ esp_err_t scheduler_task_start(void)
     s_scheduler_active = true;
     // Initialize delay cycle start time
     s_delay_cycle_start = (uint32_t)time(NULL);
+    s_delay_first_run = true;  // Force first command on start
     ESP_LOGI(TAG, "Scheduler task started, delay cycle initialized at %lu", (unsigned long)s_delay_cycle_start);
     return ESP_OK;
 }
@@ -292,6 +292,7 @@ void scheduler_task_resume(void)
 
     // Reset delay cycle start time
     s_delay_cycle_start = (uint32_t)time(NULL);
+    s_delay_first_run = true;  // Force first command on resume
 
     ESP_LOGI(TAG, "Scheduler task resumed, delay cycle reset");
 }
@@ -299,5 +300,6 @@ void scheduler_task_resume(void)
 void scheduler_reset_delay_cycles(void)
 {
     s_delay_cycle_start = (uint32_t)time(NULL);
+    s_delay_first_run = true;  // Force first command after reset
     ESP_LOGI(TAG, "Delay cycles reset at timestamp %lu", (unsigned long)s_delay_cycle_start);
 }

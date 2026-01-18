@@ -98,9 +98,11 @@ static void on_button_short_press(void)
             zigbee_task_resume();
         }
 
-        // Give a short delay for mode transition to complete
-        // Since we no longer disable the radio, the network should be instantly available
-        vTaskDelay(pdMS_TO_TICKS(500));
+        // Give time for the radio, Zigbee task and network steering to complete
+        // End devices need time to detect the coordinator is back and reconnect
+        // This can take 5-10 seconds depending on the device polling interval
+        ESP_LOGI(TAG, "Waiting for Zigbee devices to reconnect...");
+        vTaskDelay(pdMS_TO_TICKS(8000));
 
         // Process any pending leave requests from devices deleted while in Wi-Fi mode
         wifi_task_process_pending_leave();
@@ -120,13 +122,13 @@ static void on_button_short_press(void)
 
         scheduler_task_stop();
 
-        // Pause Zigbee command processing (Wi-Fi and Zigbee coexist via TDM)
+        // Stop Zigbee task and disable 802.15.4 radio for WiFi
         if (s_zigbee_started) {
             zigbee_task_stop();
         }
 
-        // Short delay for mode transition
-        vTaskDelay(pdMS_TO_TICKS(300));
+        // Wait for radio to be fully released before starting WiFi
+        vTaskDelay(pdMS_TO_TICKS(1000));
 
         esp_err_t ret = wifi_task_start();
         if (ret != ESP_OK) {
