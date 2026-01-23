@@ -62,6 +62,7 @@ extern "C" {
 #define TASK_PRIORITY_ZIGBEE    10
 #define TASK_PRIORITY_SCHEDULER 8
 #define TASK_PRIORITY_WIFI      5
+#define TASK_PRIORITY_BLE       5
 #define TASK_PRIORITY_LED       3
 
 /* ============================================================================
@@ -72,6 +73,7 @@ extern "C" {
 #define TASK_STACK_ZIGBEE       8192
 #define TASK_STACK_SCHEDULER    4096
 #define TASK_STACK_WIFI         4096
+#define TASK_STACK_BLE          4096
 #define TASK_STACK_LED          2048
 
 /* ============================================================================
@@ -82,6 +84,7 @@ extern "C" {
 #define EVENT_ZIGBEE_MODE_BIT   BIT1
 #define EVENT_RTC_INIT_BIT      BIT2
 #define EVENT_ERROR_BIT         BIT3
+#define EVENT_BLE_MODE_BIT      BIT4
 
 /* ============================================================================
  * Data Structures
@@ -165,7 +168,8 @@ typedef struct {
  */
 typedef enum {
     LED_STATE_NORMAL,         // 1 sec blink - automation mode active
-    LED_STATE_WIFI_ACTIVE,    // Solid ON - Wi-Fi AP active
+    LED_STATE_WIFI_ACTIVE,    // Solid ON - Wi-Fi AP active (also used for setup mode)
+    LED_STATE_BLE_ACTIVE,     // Slow 2 sec blink - BLE configuration mode
     LED_STATE_PAIRING,        // Fast blink 0.25 sec - Zigbee pairing mode
     LED_STATE_ERROR           // 3x fast blink, pause - error occurred
 } led_state_t;

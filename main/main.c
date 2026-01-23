@@ -19,6 +19,7 @@
 #include "led_task.h"
 #include "button_task.h"
 #include "wifi_task.h"
+#include "ble_task.h"
 #include "zigbee_task.h"
 #include "scheduler_task.h"
 
@@ -35,7 +36,9 @@ QueueHandle_t g_error_queue = NULL;
 SemaphoreHandle_t g_nvs_mutex = NULL;
 SemaphoreHandle_t g_device_mutex = NULL;
 
-static bool s_wifi_mode = true;  // Start in Wi-Fi mode
+static bool s_wifi_mode = true;   // Track if WiFi is active
+static bool s_ble_mode = true;    // Track if BLE is active
+static bool s_setup_mode = true;  // Track if in initial setup phase
 static bool s_pairing_mode = false;  // Track if in pairing mode
 static TimerHandle_t s_pairing_timer = NULL;  // Timer for pairing timeout
 
@@ -64,7 +67,7 @@ static bool s_zigbee_started = false;  // Track if Zigbee task was ever started
 
 static void on_button_short_press(void)
 {
-    ESP_LOGI(TAG, "Short press - toggling mode");
+    ESP_LOGI(TAG, "Short press detected");
 
     // If in pairing mode, cancel it first
     if (s_pairing_mode) {
@@ -75,74 +78,59 @@ static void on_button_short_press(void)
         }
     }
 
-    if (s_wifi_mode) {
-        // Switch to Zigbee mode (WiFi -> Zigbee)
-        ESP_LOGI(TAG, "Switching to Zigbee automation mode");
+    if (s_setup_mode) {
+        // Setup mode → Operational mode (WiFi+BLE → Zigbee)
+        ESP_LOGI(TAG, "Exiting setup mode, starting Zigbee operational mode");
 
         wifi_task_stop();
+        ble_task_stop();
+        s_wifi_mode = false;
+        s_ble_mode = false;
+        s_setup_mode = false;
 
-        // Clear any old commands in the queue (e.g., power_off_all from WiFi start)
+        // Clear any old commands in the queue
         cmd_queue_msg_t dummy_msg;
         while (xQueueReceive(g_cmd_queue, &dummy_msg, 0) == pdTRUE) {
             ESP_LOGD(TAG, "Cleared old command from queue");
         }
 
-        // Start Zigbee task ONLY on first switch (after boot)
+        // Start Zigbee task
         if (!s_zigbee_started) {
             ESP_LOGI(TAG, "Starting Zigbee task for the first time");
             zigbee_task_start();
             s_zigbee_started = true;
 
-            // Give time for Zigbee task, network formation and device reconnection
-            ESP_LOGI(TAG, "Waiting for Zigbee network formation and device reconnection...");
+            // Give time for Zigbee network formation
+            ESP_LOGI(TAG, "Waiting for Zigbee network formation...");
             vTaskDelay(pdMS_TO_TICKS(8000));
 
-            // Process any pending leave requests from devices deleted while in Wi-Fi mode
+            // Process any pending leave requests
             wifi_task_process_pending_leave();
-        } else {
-            // Zigbee is already running in background (coexistence mode)
-            ESP_LOGI(TAG, "Zigbee already running in background");
         }
 
         scheduler_task_start();
-        s_wifi_mode = false;
 
-        // LED changes only after Zigbee mode is fully active
         led_set_state(LED_STATE_NORMAL);
-
         xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
-        xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT);
+        xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT | EVENT_BLE_MODE_BIT);
+
+        ESP_LOGI(TAG, "Now in Zigbee operational mode");
+    } else if (!s_ble_mode) {
+        // Zigbee only → Zigbee + BLE config mode
+        ESP_LOGI(TAG, "Starting BLE configuration mode");
+        ble_task_start();
+        s_ble_mode = true;
+        led_set_state(LED_STATE_BLE_ACTIVE);
+        xEventGroupSetBits(g_event_group, EVENT_BLE_MODE_BIT);
+        ESP_LOGI(TAG, "BLE configuration mode active");
     } else {
-        // Switch to Wi-Fi mode (Zigbee -> WiFi)
-        // NOTE: Zigbee continues running in background (coexistence)
-        ESP_LOGI(TAG, "Switching to Wi-Fi configuration mode");
-
-        scheduler_task_stop();
-
-        // Start WiFi (coexistence with Zigbee if already started)
-        if (s_zigbee_started) {
-            ESP_LOGI(TAG, "Starting Wi-Fi in coexistence mode with Zigbee");
-        }
-
-        esp_err_t ret = wifi_task_start();
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to start Wi-Fi, retrying with longer delay...");
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            ret = wifi_task_start();
-        }
-
-        // Give the WiFi AP more time to become visible
-        if (ret == ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(500));
-            s_wifi_mode = true;
-            xEventGroupSetBits(g_event_group, EVENT_WIFI_MODE_BIT);
-            xEventGroupClearBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
-            led_set_state(LED_STATE_WIFI_ACTIVE);
-            ESP_LOGI(TAG, "Wi-Fi AP should now be visible");
-        } else {
-            ESP_LOGE(TAG, "Wi-Fi start failed after retry");
-            led_set_state(LED_STATE_ERROR);
-        }
+        // Zigbee + BLE → Zigbee only mode
+        ESP_LOGI(TAG, "Stopping BLE, returning to automation mode");
+        ble_task_stop();
+        s_ble_mode = false;
+        led_set_state(LED_STATE_NORMAL);
+        xEventGroupClearBits(g_event_group, EVENT_BLE_MODE_BIT);
+        ESP_LOGI(TAG, "Back to Zigbee automation mode");
     }
 }
 
@@ -278,28 +266,35 @@ void app_main(void)
     // Initialize Wi-Fi task
     ESP_ERROR_CHECK(wifi_task_init());
 
-    // Initialize Zigbee task (but don't start yet - radio shared with Wi-Fi)
+    // Initialize BLE task
+    ESP_ERROR_CHECK(ble_task_init());
+
+    // Initialize Zigbee task (but don't start yet)
     ESP_ERROR_CHECK(zigbee_task_init());
 
     // Initialize scheduler task
     ESP_ERROR_CHECK(scheduler_task_init());
 
-    // Start in Wi-Fi AP mode (as per user preference)
-    // NOTE: Zigbee task NOT started here - Wi-Fi and Zigbee share the same radio on ESP32-C6
-    // Zigbee will start when user switches to Zigbee mode via button press
-    ESP_LOGI(TAG, "Starting in Wi-Fi AP mode (Zigbee will start when mode switched)");
+    // Start in setup mode with WiFi AP + BLE
+    ESP_LOGI(TAG, "Starting in setup mode (WiFi AP + BLE)");
     ESP_ERROR_CHECK(wifi_task_start());
-    s_wifi_mode = true;
+    ESP_ERROR_CHECK(ble_task_start());
 
-    xEventGroupSetBits(g_event_group, EVENT_WIFI_MODE_BIT);
-    led_set_state(LED_STATE_WIFI_ACTIVE);
+    s_wifi_mode = true;
+    s_ble_mode = true;
+    s_setup_mode = true;
+
+    xEventGroupSetBits(g_event_group, EVENT_WIFI_MODE_BIT | EVENT_BLE_MODE_BIT);
+    led_set_state(LED_STATE_WIFI_ACTIVE);  // WiFi indicator for setup
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "System initialization complete");
+    ESP_LOGI(TAG, "Setup mode active (WiFi + BLE)");
     ESP_LOGI(TAG, "Wi-Fi SSID: %s", WIFI_SSID);
     ESP_LOGI(TAG, "Wi-Fi Password: %s", WIFI_PASSWORD);
     ESP_LOGI(TAG, "Web interface: http://%s", WIFI_AP_IP);
-    ESP_LOGI(TAG, "Button GPIO %d: short press=toggle mode, long press=pairing", GPIO_BUTTON_TOGGLE);
+    ESP_LOGI(TAG, "BLE device: ESP32C6_Gateway");
+    ESP_LOGI(TAG, "Button: short press=mode switch, long press=pairing");
     ESP_LOGI(TAG, "========================================");
 
     // Main task can now idle - all work is done in other tasks
@@ -307,9 +302,10 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(10000));
 
         // Log system status periodically
-        ESP_LOGD(TAG, "System running - Wi-Fi:%s, RTC:%s, Devices:%d",
+        ESP_LOGD(TAG, "System running - WiFi:%s, BLE:%s, RTC:%s, Devices:%d",
                  s_wifi_mode ? "ON" : "OFF",
-                 wifi_task_is_rtc_initialized() ? "SET" : "NOT SET",
+                 s_ble_mode ? "ON" : "OFF",
+                 wifi_task_is_rtc_initialized() || ble_task_is_rtc_initialized() ? "SET" : "NOT SET",
                  device_manager_get_count());
     }
 }

@@ -56,6 +56,13 @@ static void led_task(void *pvParameters)
                 vTaskDelay(pdMS_TO_TICKS(100));
                 break;
 
+            case LED_STATE_BLE_ACTIVE:
+                // Slow 2 second blink (1000ms ON, 1000ms OFF)
+                led_set_level(blink_counter % 2 == 0);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                blink_counter++;
+                break;
+
             case LED_STATE_PAIRING:
                 // Fast blink for pairing mode (125ms ON, 125ms OFF = 0.25s cycle)
                 led_set_level(blink_counter % 2 == 0);

@@ -618,3 +618,46 @@ select:focus {
         flex-wrap: wrap;
     }
 }
+
+/* BLE Connection Section */
+.ble-card {
+    border-left: 4px solid var(--primary-color);
+}
+
+.ble-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    margin: 10px 0;
+    background: var(--bg-color);
+    border-radius: 4px;
+}
+
+#ble-indicator {
+    width: 12px;
+    height: 12px;
+}
+
+#ble-indicator.connected {
+    background-color: var(--primary-color);
+    animation: pulse-blue 2s infinite;
+}
+
+#ble-indicator.disconnected {
+    background-color: #999;
+}
+
+@keyframes pulse-blue {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+#ble-connect-btn,
+#ble-disconnect-btn {
+    margin-top: 10px;
+}

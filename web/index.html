@@ -3,8 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="ESP32-C6 Zigbee Gateway Configuration">
+    <meta name="theme-color" content="#0f3460">
     <title>ESP32-C6 Zigbee Gateway</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
 </head>
 <body>
     <div class="container">
@@ -17,6 +20,18 @@
         </header>
 
         <main>
+            <!-- BLE Connection Section -->
+            <section class="card ble-card" id="ble-section">
+                <h2>Bluetooth Kapcsolat</h2>
+                <p class="hint">A PWA telepitese utan kozvetlenul Bluetooth-on keresztul is csatlakozhatsz az ESP32-hoz (WiFi nelkul)</p>
+                <div class="ble-status" id="ble-status">
+                    <span id="ble-indicator" class="status-dot disconnected"></span>
+                    <span id="ble-text">Nincs csatlakozva</span>
+                </div>
+                <button onclick="connectBLE()" id="ble-connect-btn" class="btn btn-primary">Csatlakozas Bluetooth-on</button>
+                <button onclick="disconnectBLE()" id="ble-disconnect-btn" class="btn btn-secondary hidden">Kapcsolat bontasa</button>
+            </section>
+
             <!-- System Clock Section -->
             <section class="card">
                 <h2>Rendszerora</h2>
@@ -81,11 +96,12 @@
                 <div class="info-box">
                     <p><strong>GPIO9 gomb hasznalata:</strong></p>
                     <ul class="info-list">
-                        <li><strong>Rovid nyomas (&lt;3 mp):</strong> Valtogatas Wi-Fi es Automatizacio kozott</li>
+                        <li><strong>Elso nyomas:</strong> WiFi+BLE → Zigbee mod (inditas)</li>
+                        <li><strong>Rovid nyomas:</strong> BLE ki/be kapcsolas (Zigbee fut)</li>
                         <li><strong>Hosszu nyomas (&ge;3 mp):</strong> Zigbee parositas aktivitas (60 mp)</li>
                     </ul>
                 </div>
-                <p class="hint">Az automatizacio elinditasahoz nyomd meg roviden a gombot az ESP-n</p>
+                <p class="hint">Bluetooth csatlakozashoz nyomd meg a gombot BLE mod aktivalasakor</p>
                 <hr style="margin: 15px 0; border-color: var(--border-color);">
                 <button onclick="factoryReset()" class="btn btn-danger">Gyari alaphelyzetbe allitas</button>
                 <p class="hint warning">Torli az osszes eszkozt es beallitast!</p>
@@ -152,6 +168,21 @@
         <div id="toast" class="toast hidden"></div>
     </div>
 
+    <script src="ble-service.js"></script>
     <script src="script.js"></script>
+    <script>
+        // Register service worker for PWA
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/service-worker.js')
+                    .then(registration => {
+                        console.log('Service Worker registered:', registration);
+                    })
+                    .catch(error => {
+                        console.log('Service Worker registration failed:', error);
+                    });
+            });
+        }
+    </script>
 </body>
 </html>

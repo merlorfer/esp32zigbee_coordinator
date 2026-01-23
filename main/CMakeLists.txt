@@ -2,7 +2,7 @@
 # ESP32-C6 Zigbee Gateway main application
 
 idf_component_register(
-    SRCS "main.c"
+    SRCS "ble_handlers.c" "ble_service.c" "ble_task.c" "main.c"
          "wifi_task.c"
          "zigbee_task.c"
          "scheduler_task.c"
@@ -20,6 +20,7 @@ idf_component_register(
              spiffs
              json
              int_drivers
+             bt
     PRIV_REQUIRES esp_driver_gpio esp_driver_uart ieee802154 espressif__esp-zigbee-lib
 )
 
