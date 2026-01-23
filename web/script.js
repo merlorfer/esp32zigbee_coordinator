@@ -321,8 +321,8 @@ function renderDevices() {
                 <div class="device-model">${escapeHtml(device.model || 'Ismeretlen model')}</div>
                 <div class="device-addr">${device.ieee_addr} | EP: ${device.endpoint}</div>
                 <div class="device-status">
-                    <span class="state-badge ${device.current_state ? 'state-on' : 'state-off'}">
-                        ${device.current_state ? 'ON' : 'OFF'}
+                    <span class="state-badge ${device.enabled ? 'state-on' : 'state-off'}">
+                        ${device.enabled ? 'Automatizacio BE' : 'Automatizacio KI'}
                     </span>
                     ${device.error ? `
                         <span class="error-badge">

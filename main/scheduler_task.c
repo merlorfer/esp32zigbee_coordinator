@@ -187,11 +187,19 @@ static void scheduler_task(void *pvParameters)
             pdMS_TO_TICKS(1000)
         );
 
-        if (!(bits & EVENT_ZIGBEE_MODE_BIT) || !(bits & EVENT_RTC_INIT_BIT)) {
+        if (!(bits & EVENT_ZIGBEE_MODE_BIT)) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        if (!(bits & EVENT_RTC_INIT_BIT)) {
+            ESP_LOGW(TAG, "RTC not initialized - time-based scheduling disabled");
+            vTaskDelay(pdMS_TO_TICKS(10000)); // Wait 10 sec before checking again
             continue;
         }
 
         if (!s_scheduler_active) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
 

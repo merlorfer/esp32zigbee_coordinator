@@ -138,10 +138,6 @@ typedef struct {
     uint16_t delay_on_minutes;
     uint16_t delay_duration_minutes;
     uint32_t delay_cycle_start;
-
-    // State tracking
-    bool current_state;
-    uint32_t last_command_timestamp;
 } device_config_t;
 
 /**

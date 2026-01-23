@@ -103,7 +103,6 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
     dev->time_pairs[0].off_time.minute = 0;
     dev->delay_on_minutes = 30;
     dev->delay_duration_minutes = 120;
-    dev->current_state = false;
 
     if (manufacturer != NULL) {
         strncpy(dev->manufacturer, manufacturer, MAX_MANUFACTURER_LEN - 1);
@@ -224,19 +223,6 @@ esp_err_t device_manager_update(uint64_t ieee_addr, const device_config_t *devic
     char ieee_str[24];
     format_ieee_addr_str(ieee_str, sizeof(ieee_str), ieee_addr);
     ESP_LOGI(TAG, "Updated device %s", ieee_str);
-    return ESP_OK;
-}
-
-esp_err_t device_manager_set_state(uint64_t ieee_addr, bool state)
-{
-    int index = device_manager_find_index(ieee_addr);
-    if (index < 0) {
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    s_devices[index].current_state = state;
-    s_devices[index].last_command_timestamp = (uint32_t)time(NULL);
-
     return ESP_OK;
 }
 

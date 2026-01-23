@@ -76,7 +76,7 @@ static void on_button_short_press(void)
     }
 
     if (s_wifi_mode) {
-        // Switch to Zigbee mode
+        // Switch to Zigbee mode (WiFi -> Zigbee)
         ESP_LOGI(TAG, "Switching to Zigbee automation mode");
 
         wifi_task_stop();
@@ -87,25 +87,22 @@ static void on_button_short_press(void)
             ESP_LOGD(TAG, "Cleared old command from queue");
         }
 
-        // Start Zigbee task if not already started
+        // Start Zigbee task ONLY on first switch (after boot)
         if (!s_zigbee_started) {
             ESP_LOGI(TAG, "Starting Zigbee task for the first time");
             zigbee_task_start();
             s_zigbee_started = true;
+
+            // Give time for Zigbee task, network formation and device reconnection
+            ESP_LOGI(TAG, "Waiting for Zigbee network formation and device reconnection...");
+            vTaskDelay(pdMS_TO_TICKS(8000));
+
+            // Process any pending leave requests from devices deleted while in Wi-Fi mode
+            wifi_task_process_pending_leave();
         } else {
-            // Resume Zigbee radio if it was previously stopped
-            ESP_LOGI(TAG, "Resuming Zigbee radio");
-            zigbee_task_resume();
+            // Zigbee is already running in background (coexistence mode)
+            ESP_LOGI(TAG, "Zigbee already running in background");
         }
-
-        // Give time for the radio, Zigbee task and network steering to complete
-        // End devices need time to detect the coordinator is back and reconnect
-        // This can take 5-10 seconds depending on the device polling interval
-        ESP_LOGI(TAG, "Waiting for Zigbee devices to reconnect...");
-        vTaskDelay(pdMS_TO_TICKS(8000));
-
-        // Process any pending leave requests from devices deleted while in Wi-Fi mode
-        wifi_task_process_pending_leave();
 
         scheduler_task_start();
         s_wifi_mode = false;
@@ -116,19 +113,16 @@ static void on_button_short_press(void)
         xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
         xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT);
     } else {
-        // Switch to Wi-Fi mode
-        // NOTE: On ESP32-C6, Wi-Fi and Zigbee share the radio
+        // Switch to Wi-Fi mode (Zigbee -> WiFi)
+        // NOTE: Zigbee continues running in background (coexistence)
         ESP_LOGI(TAG, "Switching to Wi-Fi configuration mode");
 
         scheduler_task_stop();
 
-        // Stop Zigbee task and disable 802.15.4 radio for WiFi
+        // Start WiFi (coexistence with Zigbee if already started)
         if (s_zigbee_started) {
-            zigbee_task_stop();
+            ESP_LOGI(TAG, "Starting Wi-Fi in coexistence mode with Zigbee");
         }
-
-        // Wait for radio to be fully released before starting WiFi
-        vTaskDelay(pdMS_TO_TICKS(1000));
 
         esp_err_t ret = wifi_task_start();
         if (ret != ESP_OK) {
@@ -275,6 +269,11 @@ void app_main(void)
 
     // Initialize button task
     ESP_ERROR_CHECK(button_task_init(on_button_short_press, on_button_long_press));
+
+    // NOTE: Wi-Fi and Zigbee coexistence is configured in menuconfig:
+    //   Component config -> Wi-Fi -> Software controls WiFi/Bluetooth coexistence -> [*]
+    //   Component config -> ESP System Settings -> Event loop task stack size -> 4096
+    // The coexistence is automatic when both Wi-Fi and Zigbee are running
 
     // Initialize Wi-Fi task
     ESP_ERROR_CHECK(wifi_task_init());

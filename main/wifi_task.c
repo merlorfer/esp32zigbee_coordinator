@@ -313,8 +313,6 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
             cJSON_AddNumberToObject(device, "delay_duration_minutes", dev.delay_duration_minutes);
         }
 
-        cJSON_AddBoolToObject(device, "current_state", dev.current_state);
-
         // Check for error
         device_error_t error;
         if (device_manager_get_error(dev.ieee_addr, &error) == ESP_OK && error.active) {

@@ -62,26 +62,6 @@ esp_err_t zigbee_send_toggle(uint64_t ieee_addr, uint8_t endpoint);
 bool zigbee_is_running(void);
 
 /**
- * @brief Stop Zigbee radio operation
- *
- * Stops Zigbee operations to allow Wi-Fi to use the shared radio.
- * Note: On ESP32-C6, Wi-Fi and Zigbee share the same 2.4GHz radio.
- *
- * @return ESP_OK on success
- */
-esp_err_t zigbee_task_stop(void);
-
-/**
- * @brief Resume Zigbee radio operation
- *
- * Resumes Zigbee operations after Wi-Fi mode.
- * Re-enables the IEEE 802.15.4 radio.
- *
- * @return ESP_OK on success
- */
-esp_err_t zigbee_task_resume(void);
-
-/**
  * @brief Request device to leave the Zigbee network
  *
  * Sends a ZDO leave request to the device, asking it to leave the network.

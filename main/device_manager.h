@@ -61,14 +61,6 @@ esp_err_t device_manager_get_by_index(uint8_t index, device_config_t *device);
 esp_err_t device_manager_update(uint64_t ieee_addr, const device_config_t *device);
 
 /**
- * @brief Update device state
- * @param ieee_addr 64-bit IEEE address
- * @param state New state (true=ON, false=OFF)
- * @return ESP_OK on success
- */
-esp_err_t device_manager_set_state(uint64_t ieee_addr, bool state);
-
-/**
  * @brief Get device count
  * @return Number of devices
  */

@@ -254,8 +254,6 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
             if (s_pending_cmd.pending) {
                 if (resp->info.status == ESP_ZB_ZCL_STATUS_SUCCESS) {
                     ESP_LOGI(TAG, "Command acknowledged successfully");
-                    device_manager_set_state(s_pending_cmd.ieee_addr,
-                                           s_pending_cmd.cmd == CMD_ON);
                     device_manager_clear_error(s_pending_cmd.ieee_addr);
                     s_pending_cmd.pending = false;
                 } else {
@@ -633,95 +631,6 @@ esp_err_t zigbee_send_toggle(uint64_t ieee_addr, uint8_t endpoint)
 bool zigbee_is_running(void)
 {
     return s_zigbee_running;
-}
-
-esp_err_t zigbee_task_stop(void)
-{
-    ESP_LOGI(TAG, "Stopping Zigbee operations for Wi-Fi mode");
-
-    if (!s_zigbee_running) {
-        ESP_LOGW(TAG, "Zigbee already stopped");
-        return ESP_OK;
-    }
-
-    // Mark Zigbee as not running - this prevents command processing
-    s_zigbee_running = false;
-
-    // Clear any pending discovery
-    s_pending_discovery.pending = false;
-
-    // Clear any pending command
-    s_pending_cmd.pending = false;
-
-    // Clear event bits to signal Zigbee is inactive
-    if (g_event_group != NULL) {
-        xEventGroupClearBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
-    }
-
-    // Disable the radio FIRST - this will cause the Zigbee main loop to idle
-    esp_err_t ret = esp_ieee802154_disable();
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "IEEE 802.15.4 radio disabled");
-    } else {
-        ESP_LOGW(TAG, "Failed to disable radio: %s", esp_err_to_name(ret));
-    }
-
-    // Wait for the Zigbee task to reach an idle state (no radio means no work)
-    vTaskDelay(pdMS_TO_TICKS(300));
-
-    // Now suspend the task - it should be in an idle state, not holding locks
-    if (s_zigbee_task_handle != NULL) {
-        ESP_LOGI(TAG, "Suspending Zigbee task");
-        vTaskSuspend(s_zigbee_task_handle);
-    }
-
-    // Additional delay for radio to be fully released
-    vTaskDelay(pdMS_TO_TICKS(200));
-
-    ESP_LOGI(TAG, "Zigbee stopped - Wi-Fi can now use the radio");
-
-    return ESP_OK;
-}
-
-esp_err_t zigbee_task_resume(void)
-{
-    ESP_LOGI(TAG, "Resuming Zigbee operations");
-
-    // Enable the radio FIRST (while task is still suspended)
-    esp_err_t ret = esp_ieee802154_enable();
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "IEEE 802.15.4 radio enabled");
-    } else {
-        ESP_LOGW(TAG, "Failed to enable radio: %s", esp_err_to_name(ret));
-    }
-
-    // Wait for radio to be fully ready before resuming the task
-    vTaskDelay(pdMS_TO_TICKS(200));
-
-    // Now resume the Zigbee task - radio is ready for it
-    if (s_zigbee_task_handle != NULL) {
-        ESP_LOGI(TAG, "Resuming Zigbee task");
-        vTaskResume(s_zigbee_task_handle);
-    }
-
-    // Mark Zigbee as running
-    s_zigbee_running = true;
-
-    // Set event bits
-    if (g_event_group != NULL) {
-        xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
-    }
-
-    // Short delay before network steering
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Network steering runs asynchronously in the Zigbee task's main loop
-    ESP_LOGI(TAG, "Starting network steering to restore device connections...");
-    esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
-
-    ESP_LOGI(TAG, "Zigbee task resumed");
-
-    return ESP_OK;
 }
 
 esp_err_t zigbee_request_leave(uint64_t ieee_addr)
