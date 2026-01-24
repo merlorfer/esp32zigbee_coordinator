@@ -150,6 +150,31 @@ static esp_err_t script_get_handler(httpd_req_t *req)
     return serve_file(req, "/web/script.js", "application/javascript");
 }
 
+static esp_err_t ble_service_get_handler(httpd_req_t *req)
+{
+    return serve_file(req, "/web/ble-service.js", "application/javascript");
+}
+
+static esp_err_t service_worker_get_handler(httpd_req_t *req)
+{
+    return serve_file(req, "/web/service-worker.js", "application/javascript");
+}
+
+static esp_err_t manifest_get_handler(httpd_req_t *req)
+{
+    return serve_file(req, "/web/manifest.json", "application/json");
+}
+
+static esp_err_t icon192_get_handler(httpd_req_t *req)
+{
+    return serve_file(req, "/web/icon-192.png", "image/png");
+}
+
+static esp_err_t icon512_get_handler(httpd_req_t *req)
+{
+    return serve_file(req, "/web/icon-512.png", "image/png");
+}
+
 // ============================================================================
 // HTTP Handlers - API Endpoints
 // ============================================================================
@@ -673,7 +698,7 @@ static esp_err_t start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 24;  // Increased for PWA files
 
     if (httpd_start(&s_server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -701,6 +726,41 @@ static esp_err_t start_webserver(void)
         .handler = script_get_handler
     };
     httpd_register_uri_handler(s_server, &script_uri);
+
+    httpd_uri_t ble_service_uri = {
+        .uri = "/ble-service.js",
+        .method = HTTP_GET,
+        .handler = ble_service_get_handler
+    };
+    httpd_register_uri_handler(s_server, &ble_service_uri);
+
+    httpd_uri_t service_worker_uri = {
+        .uri = "/service-worker.js",
+        .method = HTTP_GET,
+        .handler = service_worker_get_handler
+    };
+    httpd_register_uri_handler(s_server, &service_worker_uri);
+
+    httpd_uri_t manifest_uri = {
+        .uri = "/manifest.json",
+        .method = HTTP_GET,
+        .handler = manifest_get_handler
+    };
+    httpd_register_uri_handler(s_server, &manifest_uri);
+
+    httpd_uri_t icon192_uri = {
+        .uri = "/icon-192.png",
+        .method = HTTP_GET,
+        .handler = icon192_get_handler
+    };
+    httpd_register_uri_handler(s_server, &icon192_uri);
+
+    httpd_uri_t icon512_uri = {
+        .uri = "/icon-512.png",
+        .method = HTTP_GET,
+        .handler = icon512_get_handler
+    };
+    httpd_register_uri_handler(s_server, &icon512_uri);
 
     // API handlers
     httpd_uri_t api_status = {

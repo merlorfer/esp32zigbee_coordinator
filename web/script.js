@@ -12,6 +12,11 @@ let espTimeOffset = 0;  // Offset between ESP RTC and local time
 let espTimeInitialized = false;
 let zigbeeActive = false;
 
+// BLE State
+let bleGateway = null;
+let bleConnected = false;
+let useBluetoothMode = false;
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -56,20 +61,243 @@ function updateClock() {
 }
 
 // ============================================================================
+// BLE Connection Management
+// ============================================================================
+
+async function connectBLE() {
+    const connectBtn = document.getElementById('ble-connect-btn');
+    const disconnectBtn = document.getElementById('ble-disconnect-btn');
+    const indicator = document.getElementById('ble-indicator');
+    const statusText = document.getElementById('ble-text');
+
+    try {
+        connectBtn.disabled = true;
+        statusText.textContent = 'Csatlakozas...';
+
+        // Check browser support
+        if (!navigator.bluetooth) {
+            showToast('Web Bluetooth nem tamogatott ebben a bongeszoben. Hasznaljon Chrome vagy Edge bongeszo!', true);
+            connectBtn.disabled = false;
+            return;
+        }
+
+        // Create BLE gateway if not exists
+        if (!bleGateway) {
+            bleGateway = new BLEGateway();
+        }
+
+        // Connect
+        await bleGateway.connect();
+
+        // Update UI
+        bleConnected = true;
+        useBluetoothMode = true;
+        indicator.className = 'status-dot connected';
+        statusText.textContent = 'Csatlakozva (BLE)';
+        connectBtn.classList.add('hidden');
+        disconnectBtn.classList.remove('hidden');
+
+        showToast('Bluetooth kapcsolat letrejott');
+
+        // Load initial data
+        await loadStatus();
+        await loadDevices();
+
+    } catch (error) {
+        console.error('BLE connection error:', error);
+        showToast('Bluetooth kapcsolat sikertelen: ' + error.message, true);
+        indicator.className = 'status-dot disconnected';
+        statusText.textContent = 'Kapcsolat sikertelen';
+        connectBtn.disabled = false;
+        bleConnected = false;
+        useBluetoothMode = false;
+    }
+}
+
+function disconnectBLE() {
+    if (bleGateway) {
+        bleGateway.disconnect();
+    }
+
+    bleConnected = false;
+    useBluetoothMode = false;
+
+    const connectBtn = document.getElementById('ble-connect-btn');
+    const disconnectBtn = document.getElementById('ble-disconnect-btn');
+    const indicator = document.getElementById('ble-indicator');
+    const statusText = document.getElementById('ble-text');
+
+    indicator.className = 'status-dot disconnected';
+    statusText.textContent = 'Nincs csatlakozva';
+    connectBtn.classList.remove('hidden');
+    disconnectBtn.classList.add('hidden');
+    connectBtn.disabled = false;
+
+    showToast('Bluetooth kapcsolat bontva');
+}
+
+// Handle BLE disconnect event
+window.addEventListener('ble-disconnected', () => {
+    showToast('Bluetooth kapcsolat megszakadt', true);
+    disconnectBLE();
+});
+
+// ============================================================================
+// API Helper Functions
+// ============================================================================
+
+async function apiRequest(endpoint, method = 'GET', body = null) {
+    if (useBluetoothMode && bleConnected) {
+        // Use BLE
+        return await bleRequest(endpoint, body);
+    } else {
+        // Use WiFi/HTTP
+        return await httpRequest(endpoint, method, body);
+    }
+}
+
+async function httpRequest(endpoint, method = 'GET', body = null) {
+    const options = {
+        method: method,
+        headers: {
+            'Content-Type': 'application/json'
+        }
+    };
+
+    if (body) {
+        options.body = JSON.stringify(body);
+    }
+
+    const response = await fetch(endpoint, options);
+    return await response.json();
+}
+
+async function bleRequest(endpoint, body = null) {
+    // Map HTTP endpoints to BLE commands
+    const command = endpointToCommand(endpoint, body);
+
+    if (!command) {
+        throw new Error('Unknown endpoint: ' + endpoint);
+    }
+
+    const response = await bleGateway.sendCommand(command.cmd, command.params);
+
+    // Convert BLE response to HTTP-like format
+    if (response.status === 'ok') {
+        return { success: true, ...response };
+    } else if (response.status === 'error') {
+        return { success: false, message: response.message };
+    }
+
+    return response;
+}
+
+function endpointToCommand(endpoint, body) {
+    // Map HTTP REST endpoints to BLE JSON commands
+    if (endpoint === '/api/status') {
+        return { cmd: 'get_status', params: {} };
+    }
+
+    if (endpoint === '/api/devices') {
+        return { cmd: 'get_devices', params: {} };
+    }
+
+    if (endpoint === '/api/rtc/set') {
+        // body contains {datetime: "YYYY-MM-DD HH:MM:SS"}
+        const dt = body.datetime.split(/[- :]/);
+        return {
+            cmd: 'set_rtc',
+            params: {
+                year: parseInt(dt[0]),
+                month: parseInt(dt[1]),
+                day: parseInt(dt[2]),
+                hour: parseInt(dt[3]),
+                minute: parseInt(dt[4]),
+                second: parseInt(dt[5])
+            }
+        };
+    }
+
+    if (endpoint.startsWith('/api/devices/') && endpoint.endsWith('/config')) {
+        // Device config update
+        const ieeeAddr = extractIeeeFromEndpoint(endpoint);
+        return {
+            cmd: 'set_device_config',
+            params: {
+                ieee_addr: ieeeAddr,
+                ...body
+            }
+        };
+    }
+
+    if (endpoint.startsWith('/api/devices/') && body && body.cmd) {
+        // Device control
+        return {
+            cmd: 'control_device',
+            params: body
+        };
+    }
+
+    if (endpoint.startsWith('/api/devices/') && !endpoint.includes('config')) {
+        // Device delete
+        return {
+            cmd: 'delete_device',
+            params: {
+                ieee_addr: extractIeeeFromEndpoint(endpoint)
+            }
+        };
+    }
+
+    if (endpoint === '/api/zigbee/permit-join') {
+        return {
+            cmd: 'permit_join',
+            params: body || { duration: 60 }
+        };
+    }
+
+    if (endpoint === '/api/config') {
+        if (body) {
+            return {
+                cmd: 'set_global_settings',
+                params: body
+            };
+        } else {
+            return {
+                cmd: 'get_global_settings',
+                params: {}
+            };
+        }
+    }
+
+    if (endpoint === '/api/factory-reset') {
+        return {
+            cmd: 'factory_reset',
+            params: {}
+        };
+    }
+
+    return null;
+}
+
+function extractIeeeFromEndpoint(endpoint) {
+    const match = endpoint.match(/\/api\/devices\/(0x[0-9A-Fa-f]+)/);
+    return match ? match[1] : null;
+}
+
+// ============================================================================
 // API Functions
 // ============================================================================
 
 async function loadStatus() {
     try {
-        const response = await fetch('/api/status');
-        const data = await response.json();
+        const data = await apiRequest('/api/status');
 
         const statusDot = document.getElementById('status-indicator');
         const statusText = document.getElementById('status-text');
         const rtcStatus = document.getElementById('rtc-status');
 
         statusDot.className = 'status-dot connected';
-        statusText.textContent = 'Csatlakozva';
+        statusText.textContent = useBluetoothMode ? 'Csatlakozva (BLE)' : 'Csatlakozva (WiFi)';
 
         // Update ESP time offset
         if (data.current_time) {
@@ -93,6 +321,11 @@ async function loadStatus() {
         console.error('Status load error:', error);
         document.getElementById('status-indicator').className = 'status-dot error';
         document.getElementById('status-text').textContent = 'Kapcsolat hiba';
+
+        // If BLE fails, try to reconnect
+        if (useBluetoothMode && bleConnected) {
+            disconnectBLE();
+        }
     }
 }
 
@@ -106,14 +339,9 @@ async function setRtc() {
     const datetime = input.value.replace('T', ' ') + ':00';
 
     try {
-        const response = await fetch('/api/rtc/set', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ datetime: datetime })
-        });
+        const data = await apiRequest('/api/rtc/set', 'POST', { datetime: datetime });
 
-        const data = await response.json();
-        if (data.success) {
+        if (data.success || data.status === 'ok') {
             showToast('Ora sikeresen beallitva!');
             // Reset ESP time to show immediately
             espTimeOffset = 0;
@@ -140,14 +368,9 @@ async function syncRtc() {
     const datetime = `${year}-${month}-${day} ${hour}:${minute}:${second}`;
 
     try {
-        const response = await fetch('/api/rtc/set', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ datetime: datetime })
-        });
+        const data = await apiRequest('/api/rtc/set', 'POST', { datetime: datetime });
 
-        const data = await response.json();
-        if (data.success) {
+        if (data.success || data.status === 'ok') {
             showToast('Ora szinkronizalva!');
             espTimeOffset = 0;  // After sync, offset should be ~0
             espTimeInitialized = true;
@@ -163,8 +386,7 @@ async function syncRtc() {
 
 async function loadDevices() {
     try {
-        const response = await fetch('/api/devices');
-        const data = await response.json();
+        const data = await apiRequest('/api/devices');
         devices = data.devices || [];
         renderDevices();
     } catch (error) {
@@ -180,12 +402,9 @@ async function deleteDevice(ieeeAddr) {
     }
 
     try {
-        const response = await fetch('/api/devices/' + ieeeAddr, {
-            method: 'DELETE'
-        });
+        const data = await apiRequest('/api/devices/' + ieeeAddr, 'DELETE');
 
-        const data = await response.json();
-        if (data.success) {
+        if (data.success || data.status === 'ok') {
             showToast('Eszkoz torolve');
             loadDevices();
         } else {
@@ -215,14 +434,9 @@ async function saveDeviceConfig() {
     }
 
     try {
-        const response = await fetch('/api/devices/' + ieeeAddr + '/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(config)
-        });
+        const data = await apiRequest('/api/devices/' + ieeeAddr + '/config', 'POST', config);
 
-        const data = await response.json();
-        if (data.success) {
+        if (data.success || data.status === 'ok') {
             showToast('Beallitasok mentve');
             closeModal();
             loadDevices();
@@ -237,8 +451,7 @@ async function saveDeviceConfig() {
 
 async function loadGlobalConfig() {
     try {
-        const response = await fetch('/api/config');
-        const data = await response.json();
+        const data = await apiRequest('/api/config');
 
         if (data.wifi_on_behavior) {
             document.getElementById('wifi-maintain').checked = true;
@@ -254,14 +467,9 @@ async function saveGlobalConfig() {
     const maintain = document.getElementById('wifi-maintain').checked;
 
     try {
-        const response = await fetch('/api/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ wifi_on_behavior: maintain })
-        });
+        const data = await apiRequest('/api/config', 'POST', { wifi_on_behavior: maintain });
 
-        const data = await response.json();
-        if (data.success) {
+        if (data.success || data.status === 'ok') {
             showToast('Beallitasok mentve');
         } else {
             showToast(data.message || 'Hiba tortent', true);
@@ -282,15 +490,18 @@ async function factoryReset() {
     }
 
     try {
-        const response = await fetch('/api/factory-reset', {
-            method: 'POST'
-        });
+        const data = await apiRequest('/api/factory-reset', 'POST');
 
-        const data = await response.json();
-        if (data.success) {
-            showToast('Gyari alaphelyzetbe allitas sikeres. Az eszkoz ujraindul...');
+        if (data.success || data.status === 'ok') {
+            showToast('Gyari alaphelyzetbe allitas sikeres');
             setTimeout(() => {
-                location.reload();
+                if (useBluetoothMode) {
+                    // If using BLE, just reload the page
+                    location.reload();
+                } else {
+                    // If using WiFi, device might restart
+                    location.reload();
+                }
             }, 3000);
         } else {
             showToast(data.message || 'Hiba tortent', true);

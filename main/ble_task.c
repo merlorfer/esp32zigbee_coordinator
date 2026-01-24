@@ -10,7 +10,6 @@
 #include "nvs_manager.h"
 
 #include "esp_log.h"
-#include "esp_nimble_hci.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -41,6 +40,8 @@ static void ble_advertise(void);
 
 static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
 {
+    ESP_LOGI(TAG, "GAP event: %d", event->type);
+
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         ESP_LOGI(TAG, "BLE connection %s; status=%d",
@@ -50,6 +51,20 @@ static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
         if (event->connect.status == 0) {
             // Connection established
             ble_service_set_conn_handle(event->connect.conn_handle);
+
+            // Update connection parameters for stability
+            struct ble_gap_upd_params params = {
+                .itvl_min = BLE_GAP_INITIAL_CONN_ITVL_MIN,    // 30ms min interval
+                .itvl_max = BLE_GAP_INITIAL_CONN_ITVL_MAX,    // 50ms max interval
+                .latency = 0,                                  // No latency
+                .supervision_timeout = 500,                    // 5000ms (5 sec) timeout
+                .min_ce_len = 0,
+                .max_ce_len = 0,
+            };
+            int rc = ble_gap_update_params(event->connect.conn_handle, &params);
+            if (rc != 0) {
+                ESP_LOGW(TAG, "Failed to update connection params; rc=%d", rc);
+            }
         } else {
             // Connection failed; resume advertising
             ble_advertise();
@@ -57,7 +72,8 @@ static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
         break;
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "BLE disconnect; reason=%d", event->disconnect.reason);
+        ESP_LOGI(TAG, "BLE disconnect; reason=%d (0x%02x)",
+                 event->disconnect.reason, event->disconnect.reason);
 
         // Clear connection handle
         ble_service_set_conn_handle(BLE_HS_CONN_HANDLE_NONE);
@@ -86,7 +102,9 @@ static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
                  event->mtu.conn_handle, event->mtu.value);
         break;
 
+
     default:
+        ESP_LOGW(TAG, "Unhandled GAP event: %d", event->type);
         break;
     }
 

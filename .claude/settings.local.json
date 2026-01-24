@@ -27,7 +27,8 @@
       "Bash(cmd.exe /c \"set MSYSTEM= && set MSYS= && set CYGWIN= && set TERM= && set SHELL= && cd /d D:\\\\Programing\\\\esp-idf\\\\v5.5.1\\\\esp-idf && call export.bat && cd /d D:\\\\Programing\\\\esp-idf\\\\projects\\\\AiAgent\\\\CLCode01 && idf.py build\")",
       "Bash(cmd.exe:*)",
       "Bash(powershell.exe:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(if exist build rmdir /s /q build)"
     ]
   }
 }

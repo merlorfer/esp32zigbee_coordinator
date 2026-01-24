@@ -21,7 +21,10 @@ idf_component_register(
              json
              int_drivers
              bt
-    PRIV_REQUIRES esp_driver_gpio esp_driver_uart ieee802154 espressif__esp-zigbee-lib
+    PRIV_REQUIRES esp_driver_gpio
+                  esp_driver_uart
+                  ieee802154
+                  espressif__esp-zigbee-lib
 )
 
 # Embed SPIFFS partition

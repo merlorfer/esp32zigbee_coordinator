@@ -425,6 +425,20 @@ static char *handle_permit_join(cJSON *params)
     return json_str;
 }
 
+static char *handle_get_global_settings(cJSON *params)
+{
+    global_config_t config;
+    device_manager_get_global_config(&config);
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddBoolToObject(response, "wifi_on_behavior", config.wifi_on_behavior);
+
+    char *json_str = cJSON_PrintUnformatted(response);
+    cJSON_Delete(response);
+    return json_str;
+}
+
 static char *handle_set_global_settings(cJSON *params)
 {
     if (params == NULL) {
@@ -452,6 +466,37 @@ static char *handle_set_global_settings(cJSON *params)
 
     char *json_str = cJSON_PrintUnformatted(response);
     cJSON_Delete(response);
+    return json_str;
+}
+
+static char *handle_factory_reset(cJSON *params)
+{
+    ESP_LOGW(TAG, "Factory reset requested via BLE");
+
+    // Clear all devices
+    uint8_t count = device_manager_get_count();
+    for (int i = count - 1; i >= 0; i--) {
+        device_config_t dev;
+        if (device_manager_get_by_index(i, &dev) == ESP_OK) {
+            device_manager_remove(dev.ieee_addr);
+        }
+    }
+
+    // Clear all errors
+    device_manager_clear_all_errors();
+
+    // Reset global config
+    global_config_t config = {0};
+    device_manager_set_global_config(&config);
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddStringToObject(response, "message", "Factory reset successful");
+
+    char *json_str = cJSON_PrintUnformatted(response);
+    cJSON_Delete(response);
+
+    ESP_LOGI(TAG, "Factory reset completed via BLE");
     return json_str;
 }
 
@@ -512,8 +557,12 @@ char *ble_handlers_process_command(const char *json_str, size_t len)
         response = handle_control_device(params);
     } else if (strcmp(cmd, "permit_join") == 0) {
         response = handle_permit_join(params);
+    } else if (strcmp(cmd, "get_global_settings") == 0) {
+        response = handle_get_global_settings(params);
     } else if (strcmp(cmd, "set_global_settings") == 0) {
         response = handle_set_global_settings(params);
+    } else if (strcmp(cmd, "factory_reset") == 0) {
+        response = handle_factory_reset(params);
     } else {
         cJSON *error = cJSON_CreateObject();
         cJSON_AddStringToObject(error, "status", "error");
