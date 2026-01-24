@@ -661,3 +661,49 @@ select:focus {
 #ble-disconnect-btn {
     margin-top: 10px;
 }
+
+/* Modal BLE Status Bar */
+.modal-ble-status {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 15px;
+    background-color: #f8f9fa;
+    border-radius: 6px;
+    margin-bottom: 20px;
+    border: 1px solid var(--border-color);
+}
+
+.ble-status-inline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#modal-ble-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+#modal-ble-indicator.connected {
+    background-color: var(--primary-color);
+    animation: pulse-blue 2s infinite;
+}
+
+#modal-ble-indicator.disconnected {
+    background-color: #999;
+}
+
+#modal-ble-text {
+    font-size: 0.9rem;
+    color: var(--text-light);
+    font-weight: 500;
+}
+
+#modal-ble-connect-btn,
+#modal-ble-disconnect-btn {
+    padding: 6px 12px;
+    font-size: 0.85rem;
+}

@@ -70,6 +70,8 @@ static char *handle_get_devices(cJSON *params)
     cJSON *devices = cJSON_CreateArray();
 
     uint8_t count = device_manager_get_count();
+    ESP_LOGI(TAG, "get_devices: device count=%d", count);
+
     for (uint8_t i = 0; i < count; i++) {
         device_config_t dev;
         if (device_manager_get_by_index(i, &dev) != ESP_OK) {

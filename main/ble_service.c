@@ -260,6 +260,14 @@ esp_err_t ble_service_notify_response(const char *data, size_t len)
         return ESP_FAIL;
     }
 
+    // Log response data for debugging
+    ESP_LOGI(TAG, "Sending response: len=%d", (int)len);
+    if (len < 200) {
+        ESP_LOGI(TAG, "Response data: %.*s", (int)len, data);
+    } else {
+        ESP_LOGI(TAG, "Response data (first 200 bytes): %.*s...", 200, data);
+    }
+
     struct os_mbuf *om;
     om = ble_hs_mbuf_from_flat(data, len);
     if (om == NULL) {
@@ -273,7 +281,7 @@ esp_err_t ble_service_notify_response(const char *data, size_t len)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Sent response notification: len=%zu", len);
+    ESP_LOGI(TAG, "Response notification sent successfully");
     return ESP_OK;
 }
 

@@ -10,6 +10,8 @@ class BLEGateway {
         this.service = null;
         this.characteristics = {};
         this.responseCallbacks = [];
+        this.commandQueue = [];
+        this.commandInProgress = false;
     }
 
     /**
@@ -79,37 +81,64 @@ class BLEGateway {
     }
 
     /**
-     * Send command to ESP32
+     * Send command to ESP32 (with queuing to prevent GATT conflicts)
      */
     async sendCommand(cmd, params = {}) {
         if (!this.isConnected()) {
             throw new Error('Not connected to device');
         }
 
-        const payload = JSON.stringify({ cmd, params });
-        console.log('Sending command:', payload);
+        // Add command to queue
+        return new Promise((resolve, reject) => {
+            this.commandQueue.push({ cmd, params, resolve, reject });
+            this._processCommandQueue();
+        });
+    }
 
-        const encoder = new TextEncoder();
-        const data = encoder.encode(payload);
-
-        // Check if data fits in single write (MTU - 3 bytes for headers = ~20 bytes default)
-        // For safety, use large transfer characteristic if payload > 100 bytes
-        if (data.length > 100) {
-            // Use chunked transfer
-            await this.characteristics.cmdReq.writeValue(data);
-        } else {
-            // Direct write
-            await this.characteristics.cmdReq.writeValue(data);
+    /**
+     * Process command queue sequentially
+     */
+    async _processCommandQueue() {
+        // If already processing, just return
+        if (this.commandInProgress || this.commandQueue.length === 0) {
+            return;
         }
 
-        // Wait for response
-        return new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                reject(new Error('Command timeout'));
-            }, 10000);
+        this.commandInProgress = true;
 
-            this.responseCallbacks.push({ resolve, reject, timeout });
-        });
+        while (this.commandQueue.length > 0) {
+            const { cmd, params, resolve, reject } = this.commandQueue.shift();
+
+            try {
+                const payload = JSON.stringify({ cmd, params });
+                console.log('Sending command:', payload);
+
+                const encoder = new TextEncoder();
+                const data = encoder.encode(payload);
+
+                // Write to characteristic
+                await this.characteristics.cmdReq.writeValue(data);
+
+                // Wait for response
+                const response = await new Promise((resolveResp, rejectResp) => {
+                    const timeout = setTimeout(() => {
+                        rejectResp(new Error('Command timeout'));
+                    }, 10000);
+
+                    this.responseCallbacks.push({ resolve: resolveResp, reject: rejectResp, timeout });
+                });
+
+                resolve(response);
+            } catch (error) {
+                console.error('Command error:', error);
+                reject(error);
+            }
+
+            // Small delay between commands to prevent GATT conflicts
+            await new Promise(r => setTimeout(r, 100));
+        }
+
+        this.commandInProgress = false;
     }
 
     /**

@@ -17,19 +17,35 @@ let bleGateway = null;
 let bleConnected = false;
 let useBluetoothMode = false;
 
+// Polling intervals
+let statusInterval = null;
+let devicesInterval = null;
+
 // ============================================================================
 // Initialization
 // ============================================================================
 
 document.addEventListener('DOMContentLoaded', function() {
+    // Initial load - these will use WiFi by default
     loadStatus();
     loadDevices();
     loadGlobalConfig();
     startClock();
 
-    // Refresh data periodically
-    setInterval(loadStatus, 5000);
-    setInterval(loadDevices, 10000);
+    // Refresh data periodically (only for WiFi mode)
+    statusInterval = setInterval(() => {
+        // Only poll via WiFi if NOT in BLE mode
+        if (!useBluetoothMode) {
+            loadStatus();
+        }
+    }, 5000);
+
+    devicesInterval = setInterval(() => {
+        // Only poll via WiFi if NOT in BLE mode
+        if (!useBluetoothMode) {
+            loadDevices();
+        }
+    }, 10000);
 });
 
 // ============================================================================
@@ -64,20 +80,78 @@ function updateClock() {
 // BLE Connection Management
 // ============================================================================
 
-async function connectBLE() {
-    const connectBtn = document.getElementById('ble-connect-btn');
-    const disconnectBtn = document.getElementById('ble-disconnect-btn');
+function updateBLEStatus(connected, statusMessage) {
+    // Update main BLE status
     const indicator = document.getElementById('ble-indicator');
     const statusText = document.getElementById('ble-text');
+    const connectBtn = document.getElementById('ble-connect-btn');
+    const disconnectBtn = document.getElementById('ble-disconnect-btn');
 
+    if (indicator) {
+        indicator.className = connected ? 'status-dot connected' : 'status-dot disconnected';
+    }
+    if (statusText) {
+        statusText.textContent = statusMessage;
+    }
+    if (connectBtn) {
+        if (connected) {
+            connectBtn.classList.add('hidden');
+        } else {
+            connectBtn.classList.remove('hidden');
+        }
+    }
+    if (disconnectBtn) {
+        if (connected) {
+            disconnectBtn.classList.remove('hidden');
+        } else {
+            disconnectBtn.classList.add('hidden');
+        }
+    }
+
+    // Update modal BLE status
+    const modalIndicator = document.getElementById('modal-ble-indicator');
+    const modalStatusText = document.getElementById('modal-ble-text');
+    const modalConnectBtn = document.getElementById('modal-ble-connect-btn');
+    const modalDisconnectBtn = document.getElementById('modal-ble-disconnect-btn');
+
+    if (modalIndicator) {
+        modalIndicator.className = connected ? 'connected' : 'disconnected';
+    }
+    if (modalStatusText) {
+        modalStatusText.textContent = 'BLE: ' + statusMessage;
+    }
+    if (modalConnectBtn) {
+        if (connected) {
+            modalConnectBtn.classList.add('hidden');
+        } else {
+            modalConnectBtn.classList.remove('hidden');
+        }
+    }
+    if (modalDisconnectBtn) {
+        if (connected) {
+            modalDisconnectBtn.classList.remove('hidden');
+        } else {
+            modalDisconnectBtn.classList.add('hidden');
+        }
+    }
+}
+
+async function connectBLE() {
     try {
-        connectBtn.disabled = true;
-        statusText.textContent = 'Csatlakozas...';
+        // Disable connect buttons
+        const connectBtn = document.getElementById('ble-connect-btn');
+        const modalConnectBtn = document.getElementById('modal-ble-connect-btn');
+        if (connectBtn) connectBtn.disabled = true;
+        if (modalConnectBtn) modalConnectBtn.disabled = true;
+
+        updateBLEStatus(false, 'Csatlakozas...');
 
         // Check browser support
         if (!navigator.bluetooth) {
             showToast('Web Bluetooth nem tamogatott ebben a bongeszoben. Hasznaljon Chrome vagy Edge bongeszo!', true);
-            connectBtn.disabled = false;
+            if (connectBtn) connectBtn.disabled = false;
+            if (modalConnectBtn) modalConnectBtn.disabled = false;
+            updateBLEStatus(false, 'Nincs csatlakozva');
             return;
         }
 
@@ -92,23 +166,31 @@ async function connectBLE() {
         // Update UI
         bleConnected = true;
         useBluetoothMode = true;
-        indicator.className = 'status-dot connected';
-        statusText.textContent = 'Csatlakozva (BLE)';
-        connectBtn.classList.add('hidden');
-        disconnectBtn.classList.remove('hidden');
+        updateBLEStatus(true, 'Csatlakozva');
 
         showToast('Bluetooth kapcsolat letrejott');
 
-        // Load initial data
-        await loadStatus();
-        await loadDevices();
+        // Load initial data sequentially with delay to avoid GATT conflicts
+        try {
+            await loadStatus();
+            // Small delay between commands
+            await new Promise(resolve => setTimeout(resolve, 200));
+            await loadDevices();
+        } catch (err) {
+            console.error('Error loading initial data:', err);
+        }
 
     } catch (error) {
         console.error('BLE connection error:', error);
         showToast('Bluetooth kapcsolat sikertelen: ' + error.message, true);
-        indicator.className = 'status-dot disconnected';
-        statusText.textContent = 'Kapcsolat sikertelen';
-        connectBtn.disabled = false;
+
+        // Re-enable connect buttons
+        const connectBtn = document.getElementById('ble-connect-btn');
+        const modalConnectBtn = document.getElementById('modal-ble-connect-btn');
+        if (connectBtn) connectBtn.disabled = false;
+        if (modalConnectBtn) modalConnectBtn.disabled = false;
+
+        updateBLEStatus(false, 'Kapcsolat sikertelen');
         bleConnected = false;
         useBluetoothMode = false;
     }
@@ -122,16 +204,13 @@ function disconnectBLE() {
     bleConnected = false;
     useBluetoothMode = false;
 
-    const connectBtn = document.getElementById('ble-connect-btn');
-    const disconnectBtn = document.getElementById('ble-disconnect-btn');
-    const indicator = document.getElementById('ble-indicator');
-    const statusText = document.getElementById('ble-text');
+    updateBLEStatus(false, 'Nincs csatlakozva');
 
-    indicator.className = 'status-dot disconnected';
-    statusText.textContent = 'Nincs csatlakozva';
-    connectBtn.classList.remove('hidden');
-    disconnectBtn.classList.add('hidden');
-    connectBtn.disabled = false;
+    // Re-enable connect buttons
+    const connectBtn = document.getElementById('ble-connect-btn');
+    const modalConnectBtn = document.getElementById('modal-ble-connect-btn');
+    if (connectBtn) connectBtn.disabled = false;
+    if (modalConnectBtn) modalConnectBtn.disabled = false;
 
     showToast('Bluetooth kapcsolat bontva');
 }
@@ -139,6 +218,9 @@ function disconnectBLE() {
 // Handle BLE disconnect event
 window.addEventListener('ble-disconnected', () => {
     showToast('Bluetooth kapcsolat megszakadt', true);
+    bleConnected = false;
+    useBluetoothMode = false;
+    updateBLEStatus(false, 'Kapcsolat megszakadt');
     disconnectBLE();
 });
 
@@ -386,11 +468,38 @@ async function syncRtc() {
 
 async function loadDevices() {
     try {
+        console.log('loadDevices: Requesting device list...');
         const data = await apiRequest('/api/devices');
+        console.log('loadDevices: Received data:', data);
+        console.log('loadDevices: Device count:', data.devices ? data.devices.length : 0);
         devices = data.devices || [];
         renderDevices();
     } catch (error) {
         console.error('Device load error:', error);
+    }
+}
+
+async function refreshDevices() {
+    const refreshBtn = document.getElementById('refresh-devices-btn');
+
+    // Disable button during refresh
+    if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = 'Frissites...';
+    }
+
+    try {
+        await loadDevices();
+        showToast('Eszkoklista frissitve');
+    } catch (error) {
+        console.error('Refresh error:', error);
+        showToast('Frissites sikertelen', true);
+    } finally {
+        // Re-enable button
+        if (refreshBtn) {
+            refreshBtn.disabled = false;
+            refreshBtn.textContent = 'Frissites';
+        }
     }
 }
 
@@ -406,7 +515,15 @@ async function deleteDevice(ieeeAddr) {
 
         if (data.success || data.status === 'ok') {
             showToast('Eszkoz torolve');
-            loadDevices();
+
+            // Remove device from local array immediately for instant UI update
+            devices = devices.filter(d => d.ieee_addr !== ieeeAddr);
+            renderDevices();
+
+            // Also reload from server after a short delay (especially for BLE)
+            setTimeout(() => {
+                loadDevices();
+            }, 500);
         } else {
             showToast(data.message || 'Hiba tortent', true);
         }
@@ -577,6 +694,9 @@ function editDevice(ieeeAddr) {
 
     onModeChange();
     document.getElementById('device-modal').classList.remove('hidden');
+
+    // Update modal BLE status when opening
+    updateBLEStatus(bleConnected, bleConnected ? 'Csatlakozva' : 'Nincs csatlakozva');
 }
 
 function closeModal() {
