@@ -15,7 +15,6 @@ let zigbeeActive = false;
 // BLE State
 let bleGateway = null;
 let bleConnected = false;
-let useBluetoothMode = false;
 
 // Polling intervals
 let statusInterval = null;
@@ -23,8 +22,8 @@ let devicesInterval = null;
 
 // Helper function to check if we should poll via WiFi
 function shouldPollViaWiFi() {
-    const shouldPoll = !useBluetoothMode && !bleConnected;
-    if (!shouldPoll && (useBluetoothMode || bleConnected)) {
+    const shouldPoll = !bleConnected;
+    if (!shouldPoll) {
         console.log('Skipping WiFi poll: BLE mode active');
     }
     return shouldPoll;
@@ -173,7 +172,6 @@ async function connectBLE() {
 
         // IMPORTANT: Set flags IMMEDIATELY after successful connection
         bleConnected = true;
-        useBluetoothMode = true;
 
         // STOP WiFi polling intervals when switching to BLE mode
         if (statusInterval) {
@@ -187,7 +185,7 @@ async function connectBLE() {
             console.log('WiFi devices polling stopped');
         }
 
-        console.log('BLE flags set: bleConnected=', bleConnected, 'useBluetoothMode=', useBluetoothMode);
+        console.log('BLE flags set: bleConnected=', bleConnected);
 
         updateBLEStatus(true, 'Csatlakozva');
         showToast('Bluetooth kapcsolat letrejott');
@@ -214,7 +212,6 @@ async function connectBLE() {
 
         updateBLEStatus(false, 'Kapcsolat sikertelen');
         bleConnected = false;
-        useBluetoothMode = false;
     }
 }
 
@@ -224,7 +221,6 @@ function disconnectBLE() {
     }
 
     bleConnected = false;
-    useBluetoothMode = false;
 
     updateBLEStatus(false, 'Nincs csatlakozva');
 
@@ -272,7 +268,7 @@ window.addEventListener('ble-disconnected', () => {
 // ============================================================================
 
 async function apiRequest(endpoint, method = 'GET', body = null) {
-    if (useBluetoothMode && bleConnected) {
+    if (bleConnected) {
         // Use BLE
         return await bleRequest(endpoint, body);
     } else {
@@ -282,6 +278,11 @@ async function apiRequest(endpoint, method = 'GET', body = null) {
 }
 
 async function httpRequest(endpoint, method = 'GET', body = null) {
+    if (bleConnected) {
+        console.log('Skipped Http request - using BLE');
+        return null;
+    }
+    
     const options = {
         method: method,
         headers: {
@@ -422,7 +423,7 @@ async function loadStatus() {
         const rtcStatus = document.getElementById('rtc-status');
 
         statusDot.className = 'status-dot connected';
-        statusText.textContent = useBluetoothMode ? 'Csatlakozva (BLE)' : 'Csatlakozva (WiFi)';
+        statusText.textContent = bleConnected ? 'Csatlakozva (BLE)' : 'Csatlakozva (WiFi)';
 
         // Update ESP time offset
         if (data.current_time) {
@@ -448,7 +449,7 @@ async function loadStatus() {
         document.getElementById('status-text').textContent = 'Kapcsolat hiba';
 
         // If BLE fails, try to reconnect
-        if (useBluetoothMode && bleConnected) {
+        if (bleConnected) {
             disconnectBLE();
         }
     }
@@ -655,7 +656,7 @@ async function factoryReset() {
         if (data.success || data.status === 'ok') {
             showToast('Gyari alaphelyzetbe allitas sikeres');
             setTimeout(() => {
-                if (useBluetoothMode) {
+                if (bleConnected) {
                     // If using BLE, just reload the page
                     location.reload();
                 } else {
