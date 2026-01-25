@@ -21,6 +21,15 @@ let useBluetoothMode = false;
 let statusInterval = null;
 let devicesInterval = null;
 
+// Helper function to check if we should poll via WiFi
+function shouldPollViaWiFi() {
+    const shouldPoll = !useBluetoothMode && !bleConnected;
+    if (!shouldPoll && (useBluetoothMode || bleConnected)) {
+        console.log('Skipping WiFi poll: BLE mode active');
+    }
+    return shouldPoll;
+}
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -34,15 +43,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Refresh data periodically (only for WiFi mode)
     statusInterval = setInterval(() => {
-        // Only poll via WiFi if NOT in BLE mode
-        if (!useBluetoothMode) {
+        if (shouldPollViaWiFi()) {
             loadStatus();
         }
     }, 5000);
 
     devicesInterval = setInterval(() => {
-        // Only poll via WiFi if NOT in BLE mode
-        if (!useBluetoothMode) {
+        if (shouldPollViaWiFi()) {
             loadDevices();
         }
     }, 10000);
@@ -137,10 +144,11 @@ function updateBLEStatus(connected, statusMessage) {
 }
 
 async function connectBLE() {
+    const connectBtn = document.getElementById('ble-connect-btn');
+    const modalConnectBtn = document.getElementById('modal-ble-connect-btn');
+
     try {
         // Disable connect buttons
-        const connectBtn = document.getElementById('ble-connect-btn');
-        const modalConnectBtn = document.getElementById('modal-ble-connect-btn');
         if (connectBtn) connectBtn.disabled = true;
         if (modalConnectBtn) modalConnectBtn.disabled = true;
 
@@ -163,21 +171,37 @@ async function connectBLE() {
         // Connect
         await bleGateway.connect();
 
-        // Update UI
+        // IMPORTANT: Set flags IMMEDIATELY after successful connection
         bleConnected = true;
         useBluetoothMode = true;
-        updateBLEStatus(true, 'Csatlakozva');
 
+        // STOP WiFi polling intervals when switching to BLE mode
+        if (statusInterval) {
+            clearInterval(statusInterval);
+            statusInterval = null;
+            console.log('WiFi status polling stopped');
+        }
+        if (devicesInterval) {
+            clearInterval(devicesInterval);
+            devicesInterval = null;
+            console.log('WiFi devices polling stopped');
+        }
+
+        console.log('BLE flags set: bleConnected=', bleConnected, 'useBluetoothMode=', useBluetoothMode);
+
+        updateBLEStatus(true, 'Csatlakozva');
         showToast('Bluetooth kapcsolat letrejott');
 
         // Load initial data sequentially with delay to avoid GATT conflicts
+        // Don't use setTimeout to avoid closure/scope issues
         try {
+            await new Promise(resolve => setTimeout(resolve, 500));
             await loadStatus();
-            // Small delay between commands
-            await new Promise(resolve => setTimeout(resolve, 200));
+            await new Promise(resolve => setTimeout(resolve, 300));
             await loadDevices();
         } catch (err) {
             console.error('Error loading initial data:', err);
+            // Don't show error toast - connection is still established
         }
 
     } catch (error) {
@@ -185,8 +209,6 @@ async function connectBLE() {
         showToast('Bluetooth kapcsolat sikertelen: ' + error.message, true);
 
         // Re-enable connect buttons
-        const connectBtn = document.getElementById('ble-connect-btn');
-        const modalConnectBtn = document.getElementById('modal-ble-connect-btn');
         if (connectBtn) connectBtn.disabled = false;
         if (modalConnectBtn) modalConnectBtn.disabled = false;
 
@@ -212,15 +234,36 @@ function disconnectBLE() {
     if (connectBtn) connectBtn.disabled = false;
     if (modalConnectBtn) modalConnectBtn.disabled = false;
 
+    // RESTART WiFi polling intervals ONLY if they don't exist
+    // Clear first to prevent duplicates
+    if (statusInterval) {
+        clearInterval(statusInterval);
+        statusInterval = null;
+    }
+    statusInterval = setInterval(() => {
+        if (shouldPollViaWiFi()) {
+            loadStatus();
+        }
+    }, 5000);
+    console.log('WiFi status polling restarted');
+
+    if (devicesInterval) {
+        clearInterval(devicesInterval);
+        devicesInterval = null;
+    }
+    devicesInterval = setInterval(() => {
+        if (shouldPollViaWiFi()) {
+            loadDevices();
+        }
+    }, 10000);
+    console.log('WiFi devices polling restarted');
+
     showToast('Bluetooth kapcsolat bontva');
 }
 
 // Handle BLE disconnect event
 window.addEventListener('ble-disconnected', () => {
     showToast('Bluetooth kapcsolat megszakadt', true);
-    bleConnected = false;
-    useBluetoothMode = false;
-    updateBLEStatus(false, 'Kapcsolat megszakadt');
     disconnectBLE();
 });
 

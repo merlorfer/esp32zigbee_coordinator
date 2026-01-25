@@ -12,6 +12,14 @@ class BLEGateway {
         this.responseCallbacks = [];
         this.commandQueue = [];
         this.commandInProgress = false;
+
+        // Store bound handlers to allow proper cleanup
+        this._boundHandlers = {
+            responseNotification: null,
+            deviceListNotification: null,
+            statusNotification: null,
+            disconnect: null
+        };
     }
 
     /**
@@ -45,16 +53,35 @@ class BLEGateway {
             await this.characteristics.deviceList.startNotifications();
             await this.characteristics.status.startNotifications();
 
-            // Setup notification handlers
-            this.characteristics.cmdRes.addEventListener('characteristicvaluechanged',
-                this._handleResponseNotification.bind(this));
-            this.characteristics.deviceList.addEventListener('characteristicvaluechanged',
-                this._handleDeviceListNotification.bind(this));
-            this.characteristics.status.addEventListener('characteristicvaluechanged',
-                this._handleStatusNotification.bind(this));
+            // Create bound handlers (only once)
+            if (!this._boundHandlers.responseNotification) {
+                this._boundHandlers.responseNotification = this._handleResponseNotification.bind(this);
+                this._boundHandlers.deviceListNotification = this._handleDeviceListNotification.bind(this);
+                this._boundHandlers.statusNotification = this._handleStatusNotification.bind(this);
+                this._boundHandlers.disconnect = this._handleDisconnect.bind(this);
+            }
 
-            // Setup disconnect handler
-            this.device.addEventListener('gattserverdisconnected', this._handleDisconnect.bind(this));
+            // Setup notification handlers (remove old ones first to prevent duplicates)
+            this.characteristics.cmdRes.removeEventListener('characteristicvaluechanged',
+                this._boundHandlers.responseNotification);
+            this.characteristics.cmdRes.addEventListener('characteristicvaluechanged',
+                this._boundHandlers.responseNotification);
+
+            this.characteristics.deviceList.removeEventListener('characteristicvaluechanged',
+                this._boundHandlers.deviceListNotification);
+            this.characteristics.deviceList.addEventListener('characteristicvaluechanged',
+                this._boundHandlers.deviceListNotification);
+
+            this.characteristics.status.removeEventListener('characteristicvaluechanged',
+                this._boundHandlers.statusNotification);
+            this.characteristics.status.addEventListener('characteristicvaluechanged',
+                this._boundHandlers.statusNotification);
+
+            // Setup disconnect handler (remove old one first)
+            this.device.removeEventListener('gattserverdisconnected',
+                this._boundHandlers.disconnect);
+            this.device.addEventListener('gattserverdisconnected',
+                this._boundHandlers.disconnect);
 
             console.log('BLE connection established');
             return true;
@@ -68,9 +95,36 @@ class BLEGateway {
      * Disconnect from device
      */
     disconnect() {
+        // Clean up event listeners
+        if (this.device && this._boundHandlers.disconnect) {
+            this.device.removeEventListener('gattserverdisconnected',
+                this._boundHandlers.disconnect);
+        }
+
+        if (this.characteristics.cmdRes && this._boundHandlers.responseNotification) {
+            this.characteristics.cmdRes.removeEventListener('characteristicvaluechanged',
+                this._boundHandlers.responseNotification);
+        }
+
+        if (this.characteristics.deviceList && this._boundHandlers.deviceListNotification) {
+            this.characteristics.deviceList.removeEventListener('characteristicvaluechanged',
+                this._boundHandlers.deviceListNotification);
+        }
+
+        if (this.characteristics.status && this._boundHandlers.statusNotification) {
+            this.characteristics.status.removeEventListener('characteristicvaluechanged',
+                this._boundHandlers.statusNotification);
+        }
+
+        // Disconnect GATT
         if (this.device && this.device.gatt.connected) {
             this.device.gatt.disconnect();
         }
+
+        // Clear state
+        this.responseCallbacks = [];
+        this.commandQueue = [];
+        this.commandInProgress = false;
     }
 
     /**
@@ -105,28 +159,40 @@ class BLEGateway {
         }
 
         this.commandInProgress = true;
+        console.log('Starting command queue processing, queue length:', this.commandQueue.length);
 
         while (this.commandQueue.length > 0) {
             const { cmd, params, resolve, reject } = this.commandQueue.shift();
 
             try {
                 const payload = JSON.stringify({ cmd, params });
-                console.log('Sending command:', payload);
+                console.log('Sending command:', payload, 'callbacks queue before:', this.responseCallbacks.length);
 
                 const encoder = new TextEncoder();
                 const data = encoder.encode(payload);
 
-                // Write to characteristic
-                await this.characteristics.cmdReq.writeValue(data);
-
-                // Wait for response
-                const response = await new Promise((resolveResp, rejectResp) => {
+                // Wait for response (setup callback BEFORE sending to avoid race condition)
+                const responsePromise = new Promise((resolveResp, rejectResp) => {
                     const timeout = setTimeout(() => {
+                        // Remove callback from queue on timeout
+                        const index = this.responseCallbacks.findIndex(cb => cb.timeout === timeout);
+                        if (index !== -1) {
+                            console.warn('Command timeout, removing callback from queue');
+                            this.responseCallbacks.splice(index, 1);
+                        }
                         rejectResp(new Error('Command timeout'));
                     }, 10000);
 
                     this.responseCallbacks.push({ resolve: resolveResp, reject: rejectResp, timeout });
+                    console.log('Callback registered, queue length now:', this.responseCallbacks.length);
                 });
+
+                // Write to characteristic AFTER callback is registered
+                await this.characteristics.cmdReq.writeValue(data);
+
+                // Wait for response
+                const response = await responsePromise;
+                console.log('Response received and processed successfully');
 
                 resolve(response);
             } catch (error) {
@@ -139,6 +205,7 @@ class BLEGateway {
         }
 
         this.commandInProgress = false;
+        console.log('Command queue processing finished');
     }
 
     /**
@@ -152,11 +219,15 @@ class BLEGateway {
         try {
             const response = JSON.parse(value);
 
-            // Resolve waiting promise
+            // Resolve waiting promise (FIFO - first in, first out)
             if (this.responseCallbacks.length > 0) {
+                console.log('Processing response, callbacks queue length:', this.responseCallbacks.length);
                 const callback = this.responseCallbacks.shift();
                 clearTimeout(callback.timeout);
                 callback.resolve(response);
+                console.log('Response callback resolved successfully');
+            } else {
+                console.warn('Received response but no callback waiting!');
             }
         } catch (error) {
             console.error('Failed to parse response:', error);

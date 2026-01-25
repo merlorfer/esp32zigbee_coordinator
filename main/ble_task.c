@@ -236,6 +236,9 @@ esp_err_t ble_task_init(void)
     ble_hs_cfg.gatts_register_cb = NULL;
     ble_hs_cfg.store_status_cb = NULL;
 
+    // No security - completely disable pairing/bonding to avoid reason=531 errors
+    // Some browsers/OS (Windows) try to force pairing even if not needed
+
     // Set device name
     ret = ble_svc_gap_device_name_set("ESP32C6_Gateway");
     if (ret != 0) {
