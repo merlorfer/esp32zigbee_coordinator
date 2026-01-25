@@ -87,6 +87,20 @@ static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONN_UPDATE:
         ESP_LOGI(TAG, "BLE connection updated; status=%d", event->conn_update.status);
         break;
+    
+    case BLE_GAP_EVENT_SUBSCRIBE:
+        // Log the subscription event with more readable output
+        ESP_LOGI(TAG, "BLE subscribe event: conn_handle=%d, attr_handle=%d, notify=%s, indicate=%s",
+                    event->subscribe.conn_handle,
+                    event->subscribe.attr_handle,
+                    event->subscribe.cur_notify ? "ENABLED" : "DISABLED",
+                    event->subscribe.cur_indicate ? "ENABLED" : "DISABLED");
+
+        // If a client is enabling notifications, handle it by sending the initial state.
+        if (event->subscribe.cur_notify) {
+            ble_service_on_subscribe(event->subscribe.conn_handle, event->subscribe.attr_handle);
+        }
+        return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
         ESP_LOGI(TAG, "BLE advertise complete; reason=%d", event->adv_complete.reason);

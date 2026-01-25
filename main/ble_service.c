@@ -343,3 +343,35 @@ void ble_service_set_conn_handle(uint16_t conn_handle)
     s_conn_handle = conn_handle;
     ESP_LOGI(TAG, "Connection handle set to: 0x%04x", conn_handle);
 }
+
+void ble_service_on_subscribe(uint16_t conn_handle, uint16_t attr_handle)
+{
+    // Ensure we are handling the event for the currently active connection
+    if (conn_handle != s_conn_handle) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Handling subscribe event for attr_handle %d", attr_handle);
+
+    // When a client subscribes, it's good practice to send the initial state.
+    if (attr_handle == s_chr_val_handle_dev_list) {
+        ESP_LOGI(TAG, "Client subscribed to Device List. Sending initial list.");
+        const char *cmd = "{\"cmd\":\"get_devices\"}";
+        char *response = ble_handlers_process_command(cmd, strlen(cmd));
+        if (response) {
+            ble_service_notify_devices(response, strlen(response));
+            free(response);
+        }
+    } else if (attr_handle == s_chr_val_handle_sys_status) {
+        ESP_LOGI(TAG, "Client subscribed to System Status. Sending initial status.");
+        const char *cmd = "{\"cmd\":\"get_status\"}";
+        char *response = ble_handlers_process_command(cmd, strlen(cmd));
+        if (response) {
+            ble_service_notify_status(response, strlen(response));
+            free(response);
+        }
+    } else if (attr_handle == s_chr_val_handle_cmd_res) {
+        ESP_LOGI(TAG, "Client subscribed to Command Response. No initial value to send.");
+        // No initial data for command responses, they are event-driven.
+    }
+}

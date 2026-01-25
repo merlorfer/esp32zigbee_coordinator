@@ -80,6 +80,16 @@ uint16_t ble_service_get_conn_handle(void);
  */
 void ble_service_set_conn_handle(uint16_t conn_handle);
 
+/**
+ * @brief Handle a subscription event.
+ *
+ * Called when a client subscribes to a characteristic. Sends initial data if applicable.
+ *
+ * @param conn_handle Connection handle of the subscribing client.
+ * @param attr_handle Attribute handle of the characteristic value.
+ */
+void ble_service_on_subscribe(uint16_t conn_handle, uint16_t attr_handle);
+
 #ifdef __cplusplus
 }
 #endif
