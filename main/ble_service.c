@@ -305,7 +305,7 @@ esp_err_t ble_service_notify_devices(const char *data, size_t len)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Sent device list notification: len=%zu", len);
+    ESP_LOGI(TAG, "Sent device list notification: len=%d", (int)len);
     return ESP_OK;
 }
 
@@ -329,7 +329,7 @@ esp_err_t ble_service_notify_status(const char *data, size_t len)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Sent status notification: len=%zu", len);
+    ESP_LOGI(TAG, "Sent status notification: len=%d", (int)len);
     return ESP_OK;
 }
 

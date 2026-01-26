@@ -315,6 +315,7 @@ static void zigbee_task(void *pvParameters)
 // Internal helper to resend ZCL command without resetting pending state (for retries)
 static void resend_zcl_on_off_cmd(uint64_t ieee_addr, uint8_t endpoint, uint8_t on_off_cmd_id)
 {
+    esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_ieee_addr_t ieee;
     for (int i = 0; i < 8; i++) {
         ieee[i] = (ieee_addr >> (i * 8)) & 0xFF;
@@ -323,6 +324,7 @@ static void resend_zcl_on_off_cmd(uint64_t ieee_addr, uint8_t endpoint, uint8_t 
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee);
     if (short_addr == 0xFFFF) {
         ESP_LOGW(TAG, "Device not found in network for retry");
+        esp_zb_lock_release();
         return;
     }
 
@@ -337,6 +339,7 @@ static void resend_zcl_on_off_cmd(uint64_t ieee_addr, uint8_t endpoint, uint8_t 
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
+    esp_zb_lock_release();
 }
 
 static void zigbee_cmd_processor_task(void *pvParameters)
@@ -494,7 +497,9 @@ esp_err_t zigbee_permit_join(uint8_t duration)
         return ESP_ERR_INVALID_STATE;
     }
 
+    esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_bdb_open_network(duration);
+    esp_zb_lock_release();
     ESP_LOGI(TAG, "Permit join enabled for %d seconds", duration);
     return ESP_OK;
 }
@@ -511,6 +516,7 @@ esp_err_t zigbee_send_on(uint64_t ieee_addr, uint8_t endpoint)
     s_pending_cmd.retry_count = 0;
     s_pending_cmd.pending = true;
 
+    esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_ieee_addr_t ieee;
     for (int i = 0; i < 8; i++) {
         ieee[i] = (ieee_addr >> (i * 8)) & 0xFF;
@@ -523,6 +529,7 @@ esp_err_t zigbee_send_on(uint64_t ieee_addr, uint8_t endpoint)
     if (short_addr == 0xFFFF) {
         ESP_LOGW(TAG, "Device %s not found in network (short addr unknown)", on_ieee_str);
         s_pending_cmd.pending = false;
+        esp_zb_lock_release();
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -537,6 +544,7 @@ esp_err_t zigbee_send_on(uint64_t ieee_addr, uint8_t endpoint)
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
+    esp_zb_lock_release();
     ESP_LOGI(TAG, "ON command sent to %s (short: 0x%04X)", on_ieee_str, short_addr);
 
     return ESP_OK;
@@ -554,6 +562,7 @@ esp_err_t zigbee_send_off(uint64_t ieee_addr, uint8_t endpoint)
     s_pending_cmd.retry_count = 0;
     s_pending_cmd.pending = true;
 
+    esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_ieee_addr_t ieee;
     for (int i = 0; i < 8; i++) {
         ieee[i] = (ieee_addr >> (i * 8)) & 0xFF;
@@ -566,6 +575,7 @@ esp_err_t zigbee_send_off(uint64_t ieee_addr, uint8_t endpoint)
     if (short_addr == 0xFFFF) {
         ESP_LOGW(TAG, "Device %s not found in network (short addr unknown)", off_ieee_str);
         s_pending_cmd.pending = false;
+        esp_zb_lock_release();
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -580,6 +590,7 @@ esp_err_t zigbee_send_off(uint64_t ieee_addr, uint8_t endpoint)
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
+    esp_zb_lock_release();
     ESP_LOGI(TAG, "OFF command sent to %s (short: 0x%04X)", off_ieee_str, short_addr);
 
     return ESP_OK;
@@ -597,6 +608,7 @@ esp_err_t zigbee_send_toggle(uint64_t ieee_addr, uint8_t endpoint)
     s_pending_cmd.retry_count = 0;
     s_pending_cmd.pending = true;
 
+    esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_ieee_addr_t ieee;
     for (int i = 0; i < 8; i++) {
         ieee[i] = (ieee_addr >> (i * 8)) & 0xFF;
@@ -609,6 +621,7 @@ esp_err_t zigbee_send_toggle(uint64_t ieee_addr, uint8_t endpoint)
     if (short_addr == 0xFFFF) {
         ESP_LOGW(TAG, "Device %s not found in network (short addr unknown)", toggle_ieee_str);
         s_pending_cmd.pending = false;
+        esp_zb_lock_release();
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -623,6 +636,7 @@ esp_err_t zigbee_send_toggle(uint64_t ieee_addr, uint8_t endpoint)
     };
 
     esp_zb_zcl_on_off_cmd_req(&cmd);
+    esp_zb_lock_release();
     ESP_LOGI(TAG, "TOGGLE command sent to %s (short: 0x%04X)", toggle_ieee_str, short_addr);
 
     return ESP_OK;
@@ -640,6 +654,7 @@ esp_err_t zigbee_request_leave(uint64_t ieee_addr)
         return ESP_ERR_INVALID_STATE;
     }
 
+    esp_zb_lock_acquire(portMAX_DELAY);
     // Convert uint64_t to esp_zb_ieee_addr_t
     esp_zb_ieee_addr_t ieee;
     uint64_to_ieee(ieee_addr, ieee);
@@ -652,6 +667,7 @@ esp_err_t zigbee_request_leave(uint64_t ieee_addr)
     uint16_t short_addr = esp_zb_address_short_by_ieee(ieee);
     if (short_addr == 0xFFFF) {
         ESP_LOGW(TAG, "Device not found in network, may have already left");
+        esp_zb_lock_release();
         return ESP_OK;  // Not an error - device is not in network
     }
 
@@ -664,6 +680,7 @@ esp_err_t zigbee_request_leave(uint64_t ieee_addr)
     memcpy(leave_req.device_address, ieee, sizeof(esp_zb_ieee_addr_t));
 
     esp_zb_zdo_device_leave_req(&leave_req, NULL, NULL);
+    esp_zb_lock_release();
     ESP_LOGI(TAG, "Leave request sent to device %s (short: 0x%04x)", ieee_str, short_addr);
 
     return ESP_OK;

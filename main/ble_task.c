@@ -10,6 +10,7 @@
 #include "nvs_manager.h"
 
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -51,7 +52,10 @@ static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
         if (event->connect.status == 0) {
             // Connection established
             ble_service_set_conn_handle(event->connect.conn_handle);
-
+            /* STABILITY FIX for Windows: Do not aggressively update connection parameters.
+             * Let the Central (Windows/Phone) dictate the parameters to avoid conflicts.
+             */
+            /*
             // Update connection parameters for stability
             struct ble_gap_upd_params params = {
                 .itvl_min = BLE_GAP_INITIAL_CONN_ITVL_MIN,    // 30ms min interval
@@ -65,6 +69,7 @@ static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
             if (rc != 0) {
                 ESP_LOGW(TAG, "Failed to update connection params; rc=%d", rc);
             }
+            */
         } else {
             // Connection failed; resume advertising
             ble_advertise();
@@ -116,6 +121,32 @@ static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
                  event->mtu.conn_handle, event->mtu.value);
         break;
 
+    case BLE_GAP_EVENT_CONN_UPDATE_REQ:
+        ESP_LOGI(TAG, "BLE connection update request");
+        // Just return 0 to accept the parameters requested by the peer
+        return 0;
+
+    case BLE_GAP_EVENT_NOTIFY_TX:
+        // Notification transmission complete
+        return 0;
+
+    case BLE_GAP_EVENT_ENC_CHANGE:
+        ESP_LOGI(TAG, "BLE encryption change; status=%d", event->enc_change.status);
+        return 0;
+
+    case BLE_GAP_EVENT_REPEAT_PAIRING:
+        // Allow re-pairing if the client lost its keys
+        ESP_LOGI(TAG, "BLE repeat pairing request - deleting old bond");
+        return 0; // 0 = allow
+
+    case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
+    case BLE_GAP_EVENT_DATA_LEN_CHG:
+        // Safe to ignore these optimization events
+        return 0;
+
+    case BLE_GAP_EVENT_IDENTITY_RESOLVED:
+        ESP_LOGI(TAG, "BLE identity resolved - Device successfully paired");
+        return 0;
 
     default:
         ESP_LOGW(TAG, "Unhandled GAP event: %d", event->type);
@@ -191,27 +222,35 @@ static void ble_on_sync(void)
 
     ESP_LOGI(TAG, "BLE host synced");
 
-    // Determine best address type
-    rc = ble_hs_util_ensure_addr(0);
+    // Generate a Static Random Address derived from the Public MAC
+    // This ensures the address is constant across reboots but distinct from Public MAC
+    // and helps bypass Windows GATT cache issues (ghost devices).
+    uint8_t addr_val[6];
+    esp_read_mac(addr_val, ESP_MAC_BT);
+    
+    // Set the two most significant bits of the most significant byte (index 5 in NimBLE) to 1
+    // to mark it as a Static Random Address (0xC0).
+    addr_val[5] |= 0xC0;
+    
+    // Mutate the least significant byte to ensure it differs from Public Identity
+    addr_val[0] ^= 0xAA;
+
+    rc = ble_hs_id_set_rnd(addr_val);
     if (rc != 0) {
-        ESP_LOGE(TAG, "Failed to ensure address; rc=%d", rc);
+        ESP_LOGE(TAG, "Failed to set random address; rc=%d", rc);
         return;
     }
 
-    // Figure out address to use
-    rc = ble_hs_id_infer_auto(0, &s_own_addr_type);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "Failed to infer address type; rc=%d", rc);
-        return;
-    }
+    // Force use of Random Address
+    s_own_addr_type = BLE_OWN_ADDR_RANDOM;
 
     // Print BLE address
-    uint8_t addr_val[6] = {0};
-    rc = ble_hs_id_copy_addr(s_own_addr_type, addr_val, NULL);
+    uint8_t final_addr[6];
+    rc = ble_hs_id_copy_addr(s_own_addr_type, final_addr, NULL);
     if (rc == 0) {
-        ESP_LOGI(TAG, "BLE address: %02x:%02x:%02x:%02x:%02x:%02x",
-                 addr_val[5], addr_val[4], addr_val[3],
-                 addr_val[2], addr_val[1], addr_val[0]);
+        ESP_LOGI(TAG, "BLE address (Random Static): %02x:%02x:%02x:%02x:%02x:%02x",
+                 final_addr[5], final_addr[4], final_addr[3],
+                 final_addr[2], final_addr[1], final_addr[0]);
     }
 
     // Start advertising if BLE is active
@@ -250,8 +289,11 @@ esp_err_t ble_task_init(void)
     ble_hs_cfg.gatts_register_cb = NULL;
     ble_hs_cfg.store_status_cb = NULL;
 
-    // No security - completely disable pairing/bonding to avoid reason=531 errors
-    // Some browsers/OS (Windows) try to force pairing even if not needed
+    // Security settings - Enable "Just Works" bonding to satisfy Windows requirements
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
+    ble_hs_cfg.sm_bonding = 1;  // Enable bonding
+    ble_hs_cfg.sm_mitm = 0;     // No Man-In-The-Middle protection
+    ble_hs_cfg.sm_sc = 1;       // Prefer Secure Connections
 
     // Set device name
     ret = ble_svc_gap_device_name_set("ESP32C6_Gateway");

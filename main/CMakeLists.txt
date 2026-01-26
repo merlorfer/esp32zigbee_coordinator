@@ -2,7 +2,7 @@
 # ESP32-C6 Zigbee Gateway main application
 
 idf_component_register(
-    SRCS "ble_handlers.c" "ble_service.c" "ble_task.c" "main.c"
+    SRCS "ble_task.c" "ble_handlers.c" "ble_service.c" "main.c"
          "wifi_task.c"
          "zigbee_task.c"
          "scheduler_task.c"
