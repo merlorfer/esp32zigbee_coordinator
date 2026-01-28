@@ -278,11 +278,7 @@ async function apiRequest(endpoint, method = 'GET', body = null) {
 }
 
 async function httpRequest(endpoint, method = 'GET', body = null) {
-    if (bleConnected) {
-        console.log('Skipped Http request - using BLE');
-        return null;
-    }
-    
+
     const options = {
         method: method,
         headers: {

@@ -88,11 +88,26 @@ typedef struct {
     uint16_t short_addr;
     uint64_t ieee_addr;
     bool pending;
+    uint8_t expected_responses;  // Number of simple descriptor responses we're waiting for
 } pending_discovery_t;
 
 static pending_discovery_t s_pending_discovery = {0};
 
+// Callback to clear pending discovery after timeout
+static void discovery_timeout_cb(uint8_t param)
+{
+    if (s_pending_discovery.pending) {
+        char ieee_str[24];
+        format_ieee_addr_u64(ieee_str, sizeof(ieee_str), s_pending_discovery.ieee_addr);
+        ESP_LOGW(TAG, "Device discovery timeout for %s - device does not support ON_OFF cluster or timeout occurred", ieee_str);
+        s_pending_discovery.pending = false;
+        s_pending_discovery.expected_responses = 0;
+    }
+}
+
 // Forward declarations for device discovery
+static void find_on_off_device(esp_zb_zdo_match_desc_req_param_t *param, esp_zb_zdo_match_desc_callback_t user_cb, void *user_ctx);
+static void user_find_on_off_cb(esp_zb_zdp_status_t zdo_status, uint16_t peer_addr, uint8_t peer_endpoint, void *user_ctx);
 static void request_active_endpoints(uint16_t short_addr);
 static void active_ep_cb(esp_zb_zdp_status_t zdo_status, uint8_t ep_count, uint8_t *ep_list, void *user_ctx);
 static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc_1_1_t *simple_desc, void *user_ctx);
@@ -218,8 +233,13 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             s_pending_discovery.ieee_addr = ieee_addr;
             s_pending_discovery.pending = true;
 
-            ESP_LOGI(TAG, "Starting device discovery for %s", ieee_str);
-            request_active_endpoints(dev_annce->device_short_addr);
+            ESP_LOGI(TAG, "Starting ON/OFF device search for %s", ieee_str);
+
+            // Use match descriptor to find ON/OFF devices (similar to HA_thermostat)
+            esp_zb_zdo_match_desc_req_param_t match_req;
+            match_req.dst_nwk_addr = dev_annce->device_short_addr;
+            match_req.addr_of_interest = dev_annce->device_short_addr;
+            find_on_off_device(&match_req, user_find_on_off_cb, NULL);
         }
         break;
 
@@ -690,6 +710,61 @@ esp_err_t zigbee_request_leave(uint64_t ieee_addr)
 // Device Discovery Functions
 // ============================================================================
 
+static void find_on_off_device(esp_zb_zdo_match_desc_req_param_t *param, esp_zb_zdo_match_desc_callback_t user_cb, void *user_ctx)
+{
+    uint16_t cluster_list[] = {ESP_ZB_ZCL_CLUSTER_ID_ON_OFF};
+    param->profile_id = ESP_ZB_AF_HA_PROFILE_ID;
+    param->num_in_clusters = 1;
+    param->num_out_clusters = 0;
+    param->cluster_list = cluster_list;
+    esp_zb_zdo_match_cluster(param, user_cb, user_ctx);
+}
+
+static void user_find_on_off_cb(esp_zb_zdp_status_t zdo_status, uint16_t peer_addr, uint8_t peer_endpoint, void *user_ctx)
+{
+    if (zdo_status == ESP_ZB_ZDP_STATUS_SUCCESS) {
+        ESP_LOGI(TAG, "Found ON/OFF device at short_addr=0x%04x, endpoint=%d", peer_addr, peer_endpoint);
+
+        if (!s_pending_discovery.pending) {
+            ESP_LOGW(TAG, "No pending discovery - ignoring");
+            return;
+        }
+
+        // Verify the short address matches our pending discovery
+        if (peer_addr != s_pending_discovery.short_addr) {
+            ESP_LOGW(TAG, "Short address mismatch (expected 0x%04x, got 0x%04x)",
+                     s_pending_discovery.short_addr, peer_addr);
+            return;
+        }
+
+        // Add the device with the discovered endpoint
+        uint8_t ieee_bytes[8];
+        uint64_to_ieee(s_pending_discovery.ieee_addr, ieee_bytes);
+        char ieee_str[24];
+        format_ieee_addr(ieee_str, sizeof(ieee_str), ieee_bytes);
+
+        ESP_LOGI(TAG, "Adding ON/OFF device %s with endpoint %d", ieee_str, peer_endpoint);
+
+        esp_err_t ret = device_manager_add(s_pending_discovery.ieee_addr, peer_endpoint, NULL, NULL);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Device added successfully");
+        } else {
+            ESP_LOGW(TAG, "Failed to add device: %s", esp_err_to_name(ret));
+        }
+
+        s_pending_discovery.pending = false;
+        s_pending_discovery.expected_responses = 0;
+    } else {
+        ESP_LOGW(TAG, "ON/OFF device search failed with status %d", zdo_status);
+
+        // Fallback: Try basic endpoint discovery
+        if (s_pending_discovery.pending) {
+            ESP_LOGI(TAG, "Falling back to basic endpoint discovery");
+            request_active_endpoints(s_pending_discovery.short_addr);
+        }
+    }
+}
+
 static void request_active_endpoints(uint16_t short_addr)
 {
     esp_zb_zdo_active_ep_req_param_t req = {
@@ -721,26 +796,24 @@ static void active_ep_cb(esp_zb_zdp_status_t zdo_status, uint8_t ep_count, uint8
         ESP_LOGI(TAG, "  Endpoint %d: %d", i, ep_list[i]);
     }
 
-    // Add device directly using first endpoint (usually endpoint 1 for ON_OFF devices)
-    // Simple Descriptor requests often time out on some devices, so we add directly
+    // Request simple descriptor for each endpoint to verify ON_OFF cluster
     if (s_pending_discovery.pending) {
-        uint8_t endpoint = ep_list[0];  // Use first endpoint
+        ESP_LOGI(TAG, "Checking endpoints for ON_OFF cluster support");
 
-        uint8_t ieee_bytes[8];
-        uint64_to_ieee(s_pending_discovery.ieee_addr, ieee_bytes);
-        char ieee_str[24];
-        format_ieee_addr(ieee_str, sizeof(ieee_str), ieee_bytes);
+        s_pending_discovery.expected_responses = ep_count;
 
-        ESP_LOGI(TAG, "Adding device %s with endpoint %d (direct add)", ieee_str, endpoint);
+        for (uint8_t i = 0; i < ep_count; i++) {
+            esp_zb_zdo_simple_desc_req_param_t req = {
+                .addr_of_interest = s_pending_discovery.short_addr,
+                .endpoint = ep_list[i],
+            };
 
-        esp_err_t ret = device_manager_add(s_pending_discovery.ieee_addr, endpoint, NULL, NULL);
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "Device added successfully");
-        } else {
-            ESP_LOGW(TAG, "Failed to add device: %s", esp_err_to_name(ret));
+            ESP_LOGI(TAG, "Requesting simple descriptor for endpoint %d", ep_list[i]);
+            esp_zb_zdo_simple_desc_req(&req, simple_desc_cb, (void *)(uintptr_t)ep_list[i]);
         }
 
-        s_pending_discovery.pending = false;
+        // Set a timeout to clear pending state if no ON_OFF cluster is found
+        esp_zb_scheduler_alarm(discovery_timeout_cb, 0, 5000);  // 5 second timeout
     }
 }
 
@@ -750,6 +823,15 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
 
     if (zdo_status != ESP_ZB_ZDP_STATUS_SUCCESS || simple_desc == NULL) {
         ESP_LOGW(TAG, "Simple descriptor request failed for endpoint %d: %d", endpoint, zdo_status);
+
+        // Decrement expected responses counter even on failure
+        if (s_pending_discovery.pending && s_pending_discovery.expected_responses > 0) {
+            s_pending_discovery.expected_responses--;
+            if (s_pending_discovery.expected_responses == 0) {
+                ESP_LOGW(TAG, "All simple descriptor requests completed, no ON_OFF device found");
+                s_pending_discovery.pending = false;
+            }
+        }
         return;
     }
 
@@ -762,6 +844,20 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
     // Check if this is a Home Automation profile device
     if (simple_desc->app_profile_id != ESP_ZB_AF_HA_PROFILE_ID) {
         ESP_LOGD(TAG, "  Not a HA profile device, skipping");
+
+        // Decrement expected responses counter
+        if (s_pending_discovery.pending && s_pending_discovery.expected_responses > 0) {
+            s_pending_discovery.expected_responses--;
+            if (s_pending_discovery.expected_responses == 0) {
+                ESP_LOGW(TAG, "All endpoints checked, no HA ON_OFF device found");
+                s_pending_discovery.pending = false;
+            }
+        }
+        return;
+    }
+
+    if (!s_pending_discovery.pending) {
+        ESP_LOGD(TAG, "No pending discovery, ignoring simple descriptor");
         return;
     }
 
@@ -777,26 +873,43 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
         }
     }
 
-    if (has_on_off && s_pending_discovery.pending) {
+    if (has_on_off) {
         // Found an endpoint with ON_OFF cluster - add device
         uint8_t ieee_bytes[8];
         uint64_to_ieee(s_pending_discovery.ieee_addr, ieee_bytes);
         char ieee_str[24];
         format_ieee_addr(ieee_str, sizeof(ieee_str), ieee_bytes);
-        ESP_LOGI(TAG, "Adding device %s with endpoint %d", ieee_str, endpoint);
+        ESP_LOGI(TAG, "Adding ON/OFF device %s with endpoint %d", ieee_str, endpoint);
 
-        device_manager_add(s_pending_discovery.ieee_addr, endpoint, NULL, NULL);
+        esp_err_t ret = device_manager_add(s_pending_discovery.ieee_addr, endpoint, NULL, NULL);
+        if (ret == ESP_OK) {
+            // Check device type for logging
+            if (simple_desc->app_device_id == ESP_ZB_HA_ON_OFF_LIGHT_DEVICE_ID) {
+                ESP_LOGI(TAG, "Device type: ON_OFF_LIGHT");
+            } else if (simple_desc->app_device_id == ESP_ZB_HA_ON_OFF_SWITCH_DEVICE_ID) {
+                ESP_LOGI(TAG, "Device type: ON_OFF_SWITCH");
+            } else if (simple_desc->app_device_id == ESP_ZB_HA_DIMMABLE_LIGHT_DEVICE_ID) {
+                ESP_LOGI(TAG, "Device type: DIMMABLE_LIGHT");
+            } else {
+                ESP_LOGI(TAG, "Device type: 0x%04x", simple_desc->app_device_id);
+            }
+        }
         s_pending_discovery.pending = false;
+        s_pending_discovery.expected_responses = 0;
+    } else {
+        ESP_LOGI(TAG, "Endpoint %d does not support ON_OFF cluster, skipping", endpoint);
 
-        // Check device type for logging
-        if (simple_desc->app_device_id == ESP_ZB_HA_ON_OFF_LIGHT_DEVICE_ID) {
-            ESP_LOGI(TAG, "Device type: ON_OFF_LIGHT");
-        } else if (simple_desc->app_device_id == ESP_ZB_HA_ON_OFF_SWITCH_DEVICE_ID) {
-            ESP_LOGI(TAG, "Device type: ON_OFF_SWITCH");
-        } else if (simple_desc->app_device_id == ESP_ZB_HA_DIMMABLE_LIGHT_DEVICE_ID) {
-            ESP_LOGI(TAG, "Device type: DIMMABLE_LIGHT");
-        } else {
-            ESP_LOGI(TAG, "Device type: 0x%04x", simple_desc->app_device_id);
+        // Decrement expected responses counter
+        if (s_pending_discovery.expected_responses > 0) {
+            s_pending_discovery.expected_responses--;
+        }
+
+        // If this was the last endpoint and no ON_OFF cluster found, clear pending
+        if (s_pending_discovery.expected_responses == 0) {
+            char ieee_str[24];
+            format_ieee_addr_u64(ieee_str, sizeof(ieee_str), s_pending_discovery.ieee_addr);
+            ESP_LOGW(TAG, "Device %s does not have any ON_OFF endpoints, not adding", ieee_str);
+            s_pending_discovery.pending = false;
         }
     }
 }

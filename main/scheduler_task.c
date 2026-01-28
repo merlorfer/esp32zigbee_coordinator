@@ -260,9 +260,13 @@ esp_err_t scheduler_task_start(void)
     // Check if task already exists - just resume it
     if (s_scheduler_task_handle != NULL) {
         s_scheduler_active = true;
-        s_delay_cycle_start = (uint32_t)time(NULL);
+        // Wall clock method: Do not reset the cycle start on resume!
+        // Only set it if it's still 0 (e.g., very first start or error)
+        if (s_delay_cycle_start == 0) {
+            s_delay_cycle_start = (uint32_t)time(NULL);
+        }
         s_delay_first_run = true;  // Force first command on resume
-        ESP_LOGI(TAG, "Scheduler task resumed, delay cycle reset");
+        ESP_LOGI(TAG, "Scheduler task resumed, delay cycle continues (start: %lu)", (unsigned long)s_delay_cycle_start);
         return ESP_OK;
     }
 
@@ -298,11 +302,14 @@ void scheduler_task_resume(void)
 {
     s_scheduler_active = true;
 
-    // Reset delay cycle start time
-    s_delay_cycle_start = (uint32_t)time(NULL);
+    // Wall clock method: Do not reset the cycle start on resume!
+    if (s_delay_cycle_start == 0) {
+        s_delay_cycle_start = (uint32_t)time(NULL);
+    }
+    
     s_delay_first_run = true;  // Force first command on resume
 
-    ESP_LOGI(TAG, "Scheduler task resumed, delay cycle reset");
+    ESP_LOGI(TAG, "Scheduler task resumed, delay cycle continues (start: %lu)", (unsigned long)s_delay_cycle_start);
 }
 
 void scheduler_reset_delay_cycles(void)

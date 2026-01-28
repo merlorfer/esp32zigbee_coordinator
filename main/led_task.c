@@ -44,10 +44,9 @@ static void led_task(void *pvParameters)
 
         switch (current_state) {
             case LED_STATE_NORMAL:
-                // 1 second blink (500ms ON, 500ms OFF)
-                led_set_level(blink_counter % 2 == 0);
-                vTaskDelay(pdMS_TO_TICKS(500));
-                blink_counter++;
+                // In normal operation (Zigbee mode), LED is OFF.
+                led_set_level(false);
+                vTaskDelay(pdMS_TO_TICKS(1000)); // Check state every second
                 break;
 
             case LED_STATE_WIFI_ACTIVE:

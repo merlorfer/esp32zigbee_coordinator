@@ -2,7 +2,7 @@
   "name": "ESP32-C6 Zigbee Gateway",
   "short_name": "Gateway",
   "description": "ESP32-C6 Zigbee Gateway Configuration",
-  "start_url": "/",
+  "start_url": "/index.html",
   "display": "standalone",
   "background_color": "#1a1a2e",
   "theme_color": "#0f3460",

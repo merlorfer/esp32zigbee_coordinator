@@ -713,6 +713,13 @@ static esp_err_t start_webserver(void)
     };
     httpd_register_uri_handler(s_server, &index_uri);
 
+    httpd_uri_t index_html_uri = {
+        .uri = "/index.html",
+        .method = HTTP_GET,
+        .handler = index_get_handler
+    };
+    httpd_register_uri_handler(s_server, &index_html_uri);
+
     httpd_uri_t style_uri = {
         .uri = "/style.css",
         .method = HTTP_GET,
@@ -761,6 +768,13 @@ static esp_err_t start_webserver(void)
         .handler = icon512_get_handler
     };
     httpd_register_uri_handler(s_server, &icon512_uri);
+
+    httpd_uri_t favicon_uri = {
+        .uri = "/favicon.ico",
+        .method = HTTP_GET,
+        .handler = icon192_get_handler
+    };
+    httpd_register_uri_handler(s_server, &favicon_uri);
 
     // API handlers
     httpd_uri_t api_status = {

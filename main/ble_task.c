@@ -222,35 +222,27 @@ static void ble_on_sync(void)
 
     ESP_LOGI(TAG, "BLE host synced");
 
-    // Generate a Static Random Address derived from the Public MAC
-    // This ensures the address is constant across reboots but distinct from Public MAC
-    // and helps bypass Windows GATT cache issues (ghost devices).
-    uint8_t addr_val[6];
-    esp_read_mac(addr_val, ESP_MAC_BT);
-    
-    // Set the two most significant bits of the most significant byte (index 5 in NimBLE) to 1
-    // to mark it as a Static Random Address (0xC0).
-    addr_val[5] |= 0xC0;
-    
-    // Mutate the least significant byte to ensure it differs from Public Identity
-    addr_val[0] ^= 0xAA;
-
-    rc = ble_hs_id_set_rnd(addr_val);
+    // Determine best address type
+    rc = ble_hs_util_ensure_addr(0);
     if (rc != 0) {
-        ESP_LOGE(TAG, "Failed to set random address; rc=%d", rc);
+        ESP_LOGE(TAG, "Failed to ensure address; rc=%d", rc);
         return;
     }
 
-    // Force use of Random Address
-    s_own_addr_type = BLE_OWN_ADDR_RANDOM;
+    // Figure out address to use
+    rc = ble_hs_id_infer_auto(0, &s_own_addr_type);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to infer address type; rc=%d", rc);
+        return;
+    }
 
     // Print BLE address
-    uint8_t final_addr[6];
-    rc = ble_hs_id_copy_addr(s_own_addr_type, final_addr, NULL);
+    uint8_t addr_val[6] = {0};
+    rc = ble_hs_id_copy_addr(s_own_addr_type, addr_val, NULL);
     if (rc == 0) {
-        ESP_LOGI(TAG, "BLE address (Random Static): %02x:%02x:%02x:%02x:%02x:%02x",
-                 final_addr[5], final_addr[4], final_addr[3],
-                 final_addr[2], final_addr[1], final_addr[0]);
+        ESP_LOGI(TAG, "BLE address: %02x:%02x:%02x:%02x:%02x:%02x",
+                 addr_val[5], addr_val[4], addr_val[3],
+                 addr_val[2], addr_val[1], addr_val[0]);
     }
 
     // Start advertising if BLE is active
