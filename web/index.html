@@ -162,13 +162,21 @@
 
                     <!-- Delay Mode Settings -->
                     <div id="delay-settings" class="hidden">
+                        <p class="hint">3-fazisu ciklus: OFF1 → ON → OFF2 → ismetles</p>
                         <div class="form-group">
-                            <label for="edit-delay-on">Kesleltetes (perc):</label>
-                            <input type="number" id="edit-delay-on" min="0" max="1440" value="30">
+                            <label for="edit-delay-off1">OFF1 idotartam (perc):</label>
+                            <input type="number" id="edit-delay-off1" min="0" max="1440" value="0">
+                            <small class="hint">Kesleltetes az ON elott (lehet 0)</small>
                         </div>
                         <div class="form-group">
-                            <label for="edit-delay-duration">Idotartam (perc):</label>
+                            <label for="edit-delay-duration">ON idotartam (perc):</label>
                             <input type="number" id="edit-delay-duration" min="1" max="1440" value="120">
+                            <small class="hint">Meddig legyen bekapcsolva</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-delay-off2">OFF2 idotartam (perc):</label>
+                            <input type="number" id="edit-delay-off2" min="0" max="1440" value="30">
+                            <small class="hint">Kesleltetes az ON utan (lehet 0)</small>
                         </div>
                     </div>
 

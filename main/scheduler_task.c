@@ -23,6 +23,7 @@ static TaskHandle_t s_scheduler_task_handle = NULL;
 static bool s_scheduler_active = false;
 static uint32_t s_delay_cycle_start = 0;
 static bool s_last_delay_state = false;  // Track last sent delay state to detect transitions
+static uint8_t s_last_phase = 255;       // Track last phase (0=OFF1, 1=ON, 2=OFF2, 255=uninitialized)
 static bool s_delay_first_run = true;    // Force first command on startup
 
 /* Helper function to format IEEE address as hex string */
@@ -117,7 +118,9 @@ static void process_delay_mode(device_config_t *dev)
     }
 
     uint32_t minutes_elapsed = get_minutes_since_cycle_start();
-    uint32_t cycle_length = dev->delay_on_minutes + dev->delay_duration_minutes;
+
+    // 3-phase cycle: OFF1 → ON → OFF2
+    uint32_t cycle_length = dev->delay_off1_minutes + dev->delay_duration_minutes + dev->delay_off2_minutes;
 
     if (cycle_length == 0) {
         return;
@@ -126,30 +129,48 @@ static void process_delay_mode(device_config_t *dev)
     // Calculate position within current cycle
     uint32_t position_in_cycle = minutes_elapsed % cycle_length;
 
-    // Determine expected state
-    // 0 to delay_on_minutes-1: OFF (waiting)
-    // delay_on_minutes to cycle_length-1: ON (active)
-    bool expected_state = (position_in_cycle >= dev->delay_on_minutes);
+    // Determine expected state based on 3-phase cycle
+    // Phase 1 (OFF1): 0 <= position < off1
+    // Phase 2 (ON):   off1 <= position < (off1 + duration)
+    // Phase 3 (OFF2): (off1 + duration) <= position < cycle_length
+    uint32_t on_start = dev->delay_off1_minutes;
+    uint32_t on_end = dev->delay_off1_minutes + dev->delay_duration_minutes;
 
-    // Send command when the expected state changes (based on cycle position, not device state)
-    // This ensures commands are sent even if device state was changed manually
-    // Also send on first run after scheduler start/resume
-    if (expected_state != s_last_delay_state || s_delay_first_run) {
+    // Determine current phase (0=OFF1, 1=ON, 2=OFF2)
+    uint8_t current_phase;
+    const char *phase_name;
+    uint32_t minutes_until_change;
+
+    if (position_in_cycle < on_start) {
+        // Phase 1: OFF1
+        current_phase = 0;
+        phase_name = "OFF1";
+        minutes_until_change = on_start - position_in_cycle;
+    } else if (position_in_cycle < on_end) {
+        // Phase 2: ON
+        current_phase = 1;
+        phase_name = "ON";
+        minutes_until_change = on_end - position_in_cycle;
+    } else {
+        // Phase 3: OFF2
+        current_phase = 2;
+        phase_name = "OFF2";
+        minutes_until_change = cycle_length - position_in_cycle;
+    }
+
+    bool expected_state = (current_phase == 1);  // ON only in phase 1
+
+    // Send command when the phase changes (not just state)
+    // This ensures OFF1 → OFF2 transitions are also handled
+    if (current_phase != s_last_phase || s_delay_first_run) {
         s_delay_first_run = false;
         char ieee_str[24];
         format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
 
-        // Calculate time until next state change for logging
-        uint32_t minutes_until_change;
-        if (expected_state) {
-            minutes_until_change = cycle_length - position_in_cycle;
-        } else {
-            minutes_until_change = dev->delay_on_minutes - position_in_cycle;
-        }
-
-        ESP_LOGI(TAG, "Delay mode %s triggered for %s (pos: %lu/%lu min, next change in %lu min)",
+        ESP_LOGI(TAG, "Delay mode %s triggered for %s (phase: %s, pos: %lu/%lu min, next change in %lu min)",
                  expected_state ? "ON" : "OFF",
                  ieee_str,
+                 phase_name,
                  (unsigned long)position_in_cycle,
                  (unsigned long)cycle_length,
                  (unsigned long)minutes_until_change);
@@ -161,8 +182,9 @@ static void process_delay_mode(device_config_t *dev)
         };
         xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
 
-        // Track what we sent (not the device state)
+        // Track what we sent (both state and phase)
         s_last_delay_state = expected_state;
+        s_last_phase = current_phase;
     }
 }
 
@@ -288,6 +310,7 @@ esp_err_t scheduler_task_start(void)
     // Initialize delay cycle start time
     s_delay_cycle_start = (uint32_t)time(NULL);
     s_delay_first_run = true;  // Force first command on start
+    s_last_phase = 255;  // Reset phase tracking
     ESP_LOGI(TAG, "Scheduler task started, delay cycle initialized at %lu", (unsigned long)s_delay_cycle_start);
     return ESP_OK;
 }
@@ -306,8 +329,9 @@ void scheduler_task_resume(void)
     if (s_delay_cycle_start == 0) {
         s_delay_cycle_start = (uint32_t)time(NULL);
     }
-    
+
     s_delay_first_run = true;  // Force first command on resume
+    s_last_phase = 255;  // Reset phase tracking
 
     ESP_LOGI(TAG, "Scheduler task resumed, delay cycle continues (start: %lu)", (unsigned long)s_delay_cycle_start);
 }
@@ -316,5 +340,6 @@ void scheduler_reset_delay_cycles(void)
 {
     s_delay_cycle_start = (uint32_t)time(NULL);
     s_delay_first_run = true;  // Force first command after reset
+    s_last_phase = 255;  // Reset phase tracking
     ESP_LOGI(TAG, "Delay cycles reset at timestamp %lu", (unsigned long)s_delay_cycle_start);
 }

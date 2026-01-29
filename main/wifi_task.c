@@ -334,8 +334,10 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
             }
             cJSON_AddItemToObject(device, "time_pairs", time_pairs);
         } else {
-            cJSON_AddNumberToObject(device, "delay_on_minutes", dev.delay_on_minutes);
+            // 3-phase delay: OFF1 → ON → OFF2
+            cJSON_AddNumberToObject(device, "delay_off1_minutes", dev.delay_off1_minutes);
             cJSON_AddNumberToObject(device, "delay_duration_minutes", dev.delay_duration_minutes);
+            cJSON_AddNumberToObject(device, "delay_off2_minutes", dev.delay_off2_minutes);
         }
 
         // Check for error
@@ -433,14 +435,20 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
         }
     }
 
-    item = cJSON_GetObjectItem(root, "delay_on_minutes");
+    // 3-phase delay: OFF1 → ON → OFF2
+    item = cJSON_GetObjectItem(root, "delay_off1_minutes");
     if (cJSON_IsNumber(item)) {
-        dev.delay_on_minutes = item->valueint;
+        dev.delay_off1_minutes = item->valueint;
     }
 
     item = cJSON_GetObjectItem(root, "delay_duration_minutes");
     if (cJSON_IsNumber(item)) {
         dev.delay_duration_minutes = item->valueint;
+    }
+
+    item = cJSON_GetObjectItem(root, "delay_off2_minutes");
+    if (cJSON_IsNumber(item)) {
+        dev.delay_off2_minutes = item->valueint;
     }
 
     item = cJSON_GetObjectItem(root, "time_pairs");
@@ -479,10 +487,11 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
 
     cJSON_Delete(root);
 
-    ESP_LOGI(TAG, "Saving config: mode=%d, enabled=%d, delay_on=%lu, delay_dur=%lu",
+    ESP_LOGI(TAG, "Saving config: mode=%d, enabled=%d, delay_off1=%lu, delay_dur=%lu, delay_off2=%lu",
              dev.mode, dev.enabled,
-             (unsigned long)dev.delay_on_minutes,
-             (unsigned long)dev.delay_duration_minutes);
+             (unsigned long)dev.delay_off1_minutes,
+             (unsigned long)dev.delay_duration_minutes,
+             (unsigned long)dev.delay_off2_minutes);
 
     if (dev.mode == MODE_FIXED_TIME && dev.time_pair_count > 0) {
         for (int i = 0; i < dev.time_pair_count; i++) {

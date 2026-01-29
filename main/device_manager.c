@@ -101,8 +101,11 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
     dev->time_pairs[0].on_time.minute = 0;
     dev->time_pairs[0].off_time.hour = 18;
     dev->time_pairs[0].off_time.minute = 0;
-    dev->delay_on_minutes = 30;
-    dev->delay_duration_minutes = 120;
+
+    // 3-phase delay defaults: OFF1 → ON → OFF2
+    dev->delay_off1_minutes = 0;         // Start immediately (can be changed for sync)
+    dev->delay_duration_minutes = 120;   // ON for 2 hours
+    dev->delay_off2_minutes = 30;        // OFF for 30 minutes
 
     if (manufacturer != NULL) {
         strncpy(dev->manufacturer, manufacturer, MAX_MANUFACTURER_LEN - 1);

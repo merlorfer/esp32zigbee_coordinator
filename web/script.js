@@ -586,8 +586,10 @@ async function saveDeviceConfig() {
     if (mode === 'fixed_time') {
         config.time_pairs = getTimePairs();
     } else {
-        config.delay_on_minutes = parseInt(document.getElementById('edit-delay-on').value);
+        // 3-phase delay: OFF1 → ON → OFF2
+        config.delay_off1_minutes = parseInt(document.getElementById('edit-delay-off1').value);
         config.delay_duration_minutes = parseInt(document.getElementById('edit-delay-duration').value);
+        config.delay_off2_minutes = parseInt(document.getElementById('edit-delay-off2').value);
     }
 
     try {
@@ -596,7 +598,10 @@ async function saveDeviceConfig() {
         if (data.success || data.status === 'ok') {
             showToast('Beallitasok mentve');
             closeModal();
-            loadDevices();
+
+            // Wait a bit for NVS write to complete before reloading
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await loadDevices();
         } else {
             showToast(data.message || 'Hiba tortent', true);
         }
@@ -725,9 +730,11 @@ function editDevice(ieeeAddr) {
     document.getElementById('edit-enabled').checked = device.enabled;
     document.getElementById('edit-mode').value = device.mode;
 
-    // Set delay values
-    document.getElementById('edit-delay-on').value = device.delay_on_minutes || 30;
-    document.getElementById('edit-delay-duration').value = device.delay_duration_minutes || 120;
+    // Set delay values (3-phase)
+    // Use explicit undefined check to allow 0 values
+    document.getElementById('edit-delay-off1').value = (device.delay_off1_minutes !== undefined) ? device.delay_off1_minutes : 0;
+    document.getElementById('edit-delay-duration').value = (device.delay_duration_minutes !== undefined) ? device.delay_duration_minutes : 120;
+    document.getElementById('edit-delay-off2').value = (device.delay_off2_minutes !== undefined) ? device.delay_off2_minutes : 30;
 
     // Set time pairs
     renderTimePairs(device.time_pairs || [{ on: '06:00', off: '18:00' }]);

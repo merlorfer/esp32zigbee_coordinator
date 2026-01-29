@@ -106,8 +106,10 @@ static char *handle_get_devices(cJSON *params)
             }
             cJSON_AddItemToObject(device, "time_pairs", time_pairs);
         } else {
-            cJSON_AddNumberToObject(device, "delay_on_minutes", dev.delay_on_minutes);
+            // 3-phase delay: OFF1 → ON → OFF2
+            cJSON_AddNumberToObject(device, "delay_off1_minutes", dev.delay_off1_minutes);
             cJSON_AddNumberToObject(device, "delay_duration_minutes", dev.delay_duration_minutes);
+            cJSON_AddNumberToObject(device, "delay_off2_minutes", dev.delay_off2_minutes);
         }
 
         // Check for error
@@ -241,14 +243,20 @@ static char *handle_set_device_config(cJSON *params)
         }
     }
 
-    item = cJSON_GetObjectItem(params, "delay_on_minutes");
+    // 3-phase delay: OFF1 → ON → OFF2
+    item = cJSON_GetObjectItem(params, "delay_off1_minutes");
     if (cJSON_IsNumber(item)) {
-        dev.delay_on_minutes = item->valueint;
+        dev.delay_off1_minutes = item->valueint;
     }
 
     item = cJSON_GetObjectItem(params, "delay_duration_minutes");
     if (cJSON_IsNumber(item)) {
         dev.delay_duration_minutes = item->valueint;
+    }
+
+    item = cJSON_GetObjectItem(params, "delay_off2_minutes");
+    if (cJSON_IsNumber(item)) {
+        dev.delay_off2_minutes = item->valueint;
     }
 
     item = cJSON_GetObjectItem(params, "time_pairs");

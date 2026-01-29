@@ -137,10 +137,11 @@ typedef struct {
     uint8_t time_pair_count;
     time_pair_t time_pairs[MAX_TIME_PAIRS];
 
-    // Delay mode (cyclic operation)
-    uint16_t delay_on_minutes;
-    uint16_t delay_duration_minutes;
-    uint32_t delay_cycle_start;
+    // Delay mode (cyclic operation) - 3-phase: OFF1 → ON → OFF2
+    uint16_t delay_off1_minutes;        // OFF phase before ON (can be 0)
+    uint16_t delay_duration_minutes;    // ON phase duration
+    uint16_t delay_off2_minutes;        // OFF phase after ON (can be 0)
+    uint32_t delay_cycle_start;         // Cycle start timestamp
 } device_config_t;
 
 /**
