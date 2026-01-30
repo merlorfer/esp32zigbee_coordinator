@@ -77,7 +77,7 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
         return ESP_ERR_NO_MEM;
     }
 
-    // Check if device already exists
+    // Check if device already exists (only check IEEE for backward compatibility)
     if (device_manager_exists(ieee_addr)) {
         char ieee_str[24];
         format_ieee_addr_str(ieee_str, sizeof(ieee_str), ieee_addr);
@@ -94,6 +94,7 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
 
     dev->ieee_addr = ieee_addr;
     dev->endpoint = endpoint;
+    dev->device_type = DEVICE_TYPE_ON_OFF_LIGHT;  // Default type
     dev->enabled = false;  // Default: automation disabled
     dev->mode = MODE_FIXED_TIME;
     dev->time_pair_count = 1;
@@ -371,5 +372,157 @@ esp_err_t device_manager_set_global_config(const global_config_t *config)
     nvs_save_global_config(&s_global_config);
 
     ESP_LOGI(TAG, "Global config updated");
+    return ESP_OK;
+}
+
+esp_err_t device_manager_add_sensor(uint64_t ieee_addr, uint8_t endpoint,
+                                    device_type_t device_type,
+                                    const char *manufacturer, const char *model)
+{
+    if (s_device_count >= MAX_DEVICES) {
+        ESP_LOGE(TAG, "Device limit reached (%d)", MAX_DEVICES);
+        return ESP_ERR_NO_MEM;
+    }
+
+    // Check if device with same IEEE, endpoint AND device_type already exists
+    for (uint8_t i = 0; i < s_device_count; i++) {
+        if (s_devices[i].ieee_addr == ieee_addr &&
+            s_devices[i].endpoint == endpoint &&
+            s_devices[i].device_type == device_type) {
+            char ieee_str[24];
+            format_ieee_addr_str(ieee_str, sizeof(ieee_str), ieee_addr);
+            ESP_LOGW(TAG, "Sensor device %s (ep=%d, type=%d) already exists", ieee_str, endpoint, device_type);
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+
+    if (g_device_mutex != NULL) {
+        xSemaphoreTake(g_device_mutex, portMAX_DELAY);
+    }
+
+    device_config_t *dev = &s_devices[s_device_count];
+    memset(dev, 0, sizeof(device_config_t));
+
+    dev->ieee_addr = ieee_addr;
+    dev->endpoint = endpoint;
+    dev->device_type = device_type;
+    dev->enabled = true;  // Sensors always enabled by default
+
+    // Set default sensor configuration
+    dev->sensor.lower_threshold = 18.0f;
+    dev->sensor.upper_threshold = 25.0f;
+    dev->sensor.lower_hysteresis = 0.5f;
+    dev->sensor.upper_hysteresis = 0.5f;
+    dev->sensor.lower_linked_device = 0;  // Unassigned
+    dev->sensor.upper_linked_device = 0;  // Unassigned
+    dev->sensor.timeout_seconds = 60;  // Increased from 30 to 60 seconds
+
+    // Runtime state
+    dev->sensor.lower_active = false;
+    dev->sensor.upper_active = false;
+    dev->sensor.last_lower_action = 0;
+    dev->sensor.last_upper_action = 0;
+
+    // Reading (runtime only)
+    dev->reading.raw_value = 0;
+    dev->reading.converted_value = 0.0f;
+    dev->reading.last_update = 0;
+    dev->reading.valid = false;
+
+    if (manufacturer != NULL) {
+        strncpy(dev->manufacturer, manufacturer, MAX_MANUFACTURER_LEN - 1);
+    }
+    if (model != NULL) {
+        strncpy(dev->model, model, MAX_MODEL_LEN - 1);
+    }
+
+    const char *type_str = (device_type == DEVICE_TYPE_TEMPERATURE_SENSOR) ? "Temperature" : "Humidity";
+    snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "%s Sensor %d", type_str, s_device_count + 1);
+
+    s_device_count++;
+    s_global_config.device_count = s_device_count;
+
+    // Save to NVS
+    nvs_save_device(s_device_count - 1, dev);
+    nvs_save_device_count(s_device_count);
+    nvs_save_global_config(&s_global_config);
+
+    if (g_device_mutex != NULL) {
+        xSemaphoreGive(g_device_mutex);
+    }
+
+    char ieee_str[24];
+    format_ieee_addr_str(ieee_str, sizeof(ieee_str), ieee_addr);
+    ESP_LOGI(TAG, "Added %s sensor %s (ep=%d) at index %d", type_str, ieee_str, endpoint, s_device_count - 1);
+    return ESP_OK;
+}
+
+esp_err_t device_manager_update_sensor_reading(uint64_t ieee_addr, uint8_t endpoint,
+                                               int16_t raw_value, float converted_value,
+                                               device_type_t device_type)
+{
+    // Find the index - match by IEEE, endpoint AND device_type
+    for (uint8_t i = 0; i < s_device_count; i++) {
+        if (s_devices[i].ieee_addr == ieee_addr &&
+            s_devices[i].endpoint == endpoint &&
+            s_devices[i].device_type == device_type) {
+            if (g_device_mutex != NULL) {
+                xSemaphoreTake(g_device_mutex, portMAX_DELAY);
+            }
+
+            s_devices[i].reading.raw_value = raw_value;
+            s_devices[i].reading.converted_value = converted_value;
+            s_devices[i].reading.last_update = (uint32_t)time(NULL);
+            s_devices[i].reading.valid = true;
+
+            // Clear timeout error if it exists
+            if (s_errors[i].active && strstr(s_errors[i].error_message, "timeout") != NULL) {
+                memset(&s_errors[i], 0, sizeof(device_error_t));
+                nvs_save_error(i, &s_errors[i]);
+            }
+
+            if (g_device_mutex != NULL) {
+                xSemaphoreGive(g_device_mutex);
+            }
+
+            return ESP_OK;
+        }
+    }
+
+    return ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t device_manager_find_by_ieee_and_endpoint(uint64_t ieee_addr, uint8_t endpoint,
+                                                    device_config_t *device)
+{
+    if (device == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    for (uint8_t i = 0; i < s_device_count; i++) {
+        if (s_devices[i].ieee_addr == ieee_addr && s_devices[i].endpoint == endpoint) {
+            memcpy(device, &s_devices[i], sizeof(device_config_t));
+            return ESP_OK;
+        }
+    }
+
+    return ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t device_manager_get_sensors(device_config_t *sensors, uint8_t *count)
+{
+    if (sensors == NULL || count == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *count = 0;
+    for (uint8_t i = 0; i < s_device_count; i++) {
+        if (s_devices[i].device_type == DEVICE_TYPE_TEMPERATURE_SENSOR ||
+            s_devices[i].device_type == DEVICE_TYPE_HUMIDITY_SENSOR) {
+            memcpy(&sensors[*count], &s_devices[i], sizeof(device_config_t));
+            (*count)++;
+        }
+    }
+
     return ESP_OK;
 }

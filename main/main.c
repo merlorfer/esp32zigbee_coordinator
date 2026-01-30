@@ -33,6 +33,7 @@ EventGroupHandle_t g_event_group = NULL;
 QueueHandle_t g_cmd_queue = NULL;
 QueueHandle_t g_led_queue = NULL;
 QueueHandle_t g_error_queue = NULL;
+QueueHandle_t g_sensor_data_queue = NULL;
 SemaphoreHandle_t g_nvs_mutex = NULL;
 SemaphoreHandle_t g_device_mutex = NULL;
 
@@ -123,6 +124,18 @@ static void on_button_short_press(void)
         scheduler_task_stop();
 
         // Small delay to let Zigbee complete current operations
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+        // Send configure_report commands to wake up sleeping sensors
+        // User can press sensor button during this ~2.5 second window
+        ESP_LOGI(TAG, "Reconfiguring sensors (wake sleeping sensors now!)");
+        zigbee_reconfigure_all_sensors();
+
+        // Read current sensor values
+        ESP_LOGI(TAG, "Reading sensor data");
+        zigbee_read_all_sensor_data();
+
+        // Small delay before starting BLE
         vTaskDelay(pdMS_TO_TICKS(100));
 
         ble_task_start();
@@ -224,6 +237,12 @@ static esp_err_t init_globals(void)
     g_error_queue = xQueueCreate(8, sizeof(error_queue_msg_t));
     if (g_error_queue == NULL) {
         ESP_LOGE(TAG, "Failed to create error queue");
+        return ESP_FAIL;
+    }
+
+    g_sensor_data_queue = xQueueCreate(10, sizeof(sensor_data_msg_t));
+    if (g_sensor_data_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create sensor data queue");
         return ESP_FAIL;
     }
 

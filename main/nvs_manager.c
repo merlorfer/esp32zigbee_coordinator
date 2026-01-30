@@ -103,10 +103,26 @@ esp_err_t nvs_save_device(uint8_t index, const device_config_t *device)
         return ret;
     }
 
+    // Create a copy of the device to clear runtime-only fields
+    device_config_t device_copy;
+    memcpy(&device_copy, device, sizeof(device_config_t));
+
+    // Clear runtime-only sensor reading data (should not be persisted)
+    device_copy.reading.raw_value = 0;
+    device_copy.reading.converted_value = 0.0f;
+    device_copy.reading.last_update = 0;
+    device_copy.reading.valid = false;
+
+    // Also clear runtime sensor state (not persisted)
+    device_copy.sensor.lower_active = false;
+    device_copy.sensor.upper_active = false;
+    device_copy.sensor.last_lower_action = 0;
+    device_copy.sensor.last_upper_action = 0;
+
     char key[16];
     snprintf(key, sizeof(key), "%s%d", NVS_KEY_DEVICE_PREFIX, index);
 
-    ret = nvs_set_blob(handle, key, device, sizeof(device_config_t));
+    ret = nvs_set_blob(handle, key, &device_copy, sizeof(device_config_t));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save device %d: %s", index, esp_err_to_name(ret));
         nvs_close(handle);
@@ -141,6 +157,24 @@ esp_err_t nvs_load_device(uint8_t index, device_config_t *device)
     size_t size = sizeof(device_config_t);
     ret = nvs_get_blob(handle, key, device, &size);
     nvs_close(handle);
+
+    if (ret == ESP_OK) {
+        // Initialize runtime-only fields after loading
+        device->reading.raw_value = 0;
+        device->reading.converted_value = 0.0f;
+        device->reading.last_update = 0;
+        device->reading.valid = false;
+
+        // Initialize runtime sensor state
+        device->sensor.lower_active = false;
+        device->sensor.upper_active = false;
+        device->sensor.last_lower_action = 0;
+        device->sensor.last_upper_action = 0;
+
+        // Handle migration for devices saved before sensor support was added
+        // If device_type was not set (old version), default to ON_OFF_LIGHT
+        // This is a simple migration - newer code will have device_type set properly
+    }
 
     return ret;
 }

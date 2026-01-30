@@ -72,8 +72,8 @@ extern "C" {
 #define TASK_STACK_BUTTON       2048
 #define TASK_STACK_ZIGBEE       8192
 #define TASK_STACK_SCHEDULER    4096
-#define TASK_STACK_WIFI         4096
-#define TASK_STACK_BLE          4096
+#define TASK_STACK_WIFI         6144  // Increased for sensor data (3 devices with large config)
+#define TASK_STACK_BLE          6144  // Increased for sensor data (3 devices with large config)
 #define TASK_STACK_LED          2048
 
 /* ============================================================================
@@ -115,12 +115,53 @@ typedef enum {
 } automation_mode_t;
 
 /**
+ * @brief Device type enumeration
+ */
+typedef enum {
+    DEVICE_TYPE_ON_OFF_LIGHT = 0,
+    DEVICE_TYPE_TEMPERATURE_SENSOR = 1,
+    DEVICE_TYPE_HUMIDITY_SENSOR = 2
+} device_type_t;
+
+/**
+ * @brief Sensor configuration structure
+ */
+typedef struct {
+    float lower_threshold;
+    float upper_threshold;
+    float lower_hysteresis;
+    float upper_hysteresis;
+    uint64_t lower_linked_device;  // IEEE addr or 0
+    uint64_t upper_linked_device;  // IEEE addr or 0
+    uint16_t timeout_seconds;      // Default: 30
+
+    // Runtime state (not persisted):
+    bool lower_active;
+    bool upper_active;
+    uint32_t last_lower_action;
+    uint32_t last_upper_action;
+} sensor_config_t;
+
+/**
+ * @brief Sensor reading structure (runtime only, not saved to NVS)
+ */
+typedef struct {
+    int16_t raw_value;
+    float converted_value;
+    uint32_t last_update;
+    bool valid;
+} sensor_reading_t;
+
+/**
  * @brief Device configuration structure
  */
 typedef struct {
     // Zigbee identification
     uint64_t ieee_addr;
     uint8_t endpoint;
+
+    // Device type
+    device_type_t device_type;
 
     // Device information (from Zigbee attributes)
     char manufacturer[MAX_MANUFACTURER_LEN];
@@ -130,7 +171,7 @@ typedef struct {
     char custom_name[MAX_DEVICE_NAME_LEN];
     bool enabled;
 
-    // Automation mode
+    // Automation mode (only for ON_OFF_LIGHT devices)
     automation_mode_t mode;
 
     // Fixed time mode
@@ -142,6 +183,12 @@ typedef struct {
     uint16_t delay_duration_minutes;    // ON phase duration
     uint16_t delay_off2_minutes;        // OFF phase after ON (can be 0)
     uint32_t delay_cycle_start;         // Cycle start timestamp
+
+    // Sensor configuration (only for sensor devices)
+    sensor_config_t sensor;
+
+    // Sensor reading (runtime only, not saved to NVS)
+    sensor_reading_t reading;
 } device_config_t;
 
 /**
@@ -201,6 +248,17 @@ typedef struct {
     char message[MAX_ERROR_MSG_LEN];
 } error_queue_msg_t;
 
+/**
+ * @brief Sensor data queue message
+ */
+typedef struct {
+    uint64_t ieee_addr;
+    uint8_t endpoint;
+    uint16_t cluster_id;
+    int16_t raw_value;
+    uint32_t timestamp;
+} sensor_data_msg_t;
+
 /* ============================================================================
  * Global Variables (extern declarations)
  * ============================================================================ */
@@ -209,6 +267,7 @@ extern EventGroupHandle_t g_event_group;
 extern QueueHandle_t g_cmd_queue;
 extern QueueHandle_t g_led_queue;
 extern QueueHandle_t g_error_queue;
+extern QueueHandle_t g_sensor_data_queue;
 extern SemaphoreHandle_t g_nvs_mutex;
 extern SemaphoreHandle_t g_device_mutex;
 

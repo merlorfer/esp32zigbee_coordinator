@@ -134,6 +134,50 @@ esp_err_t device_manager_get_global_config(global_config_t *config);
  */
 esp_err_t device_manager_set_global_config(const global_config_t *config);
 
+/**
+ * @brief Add a sensor device with default configuration
+ * @param ieee_addr 64-bit IEEE address
+ * @param endpoint Endpoint ID
+ * @param device_type DEVICE_TYPE_TEMPERATURE_SENSOR or DEVICE_TYPE_HUMIDITY_SENSOR
+ * @param manufacturer Manufacturer name (can be NULL)
+ * @param model Model identifier (can be NULL)
+ * @return ESP_OK on success, ESP_ERR_NO_MEM if device limit reached
+ */
+esp_err_t device_manager_add_sensor(uint64_t ieee_addr, uint8_t endpoint,
+                                    device_type_t device_type,
+                                    const char *manufacturer, const char *model);
+
+/**
+ * @brief Update sensor reading
+ * @param ieee_addr 64-bit IEEE address
+ * @param endpoint Endpoint ID
+ * @param raw_value Raw sensor value
+ * @param converted_value Converted sensor value
+ * @param device_type Device type (TEMPERATURE or HUMIDITY sensor)
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND if device not found
+ */
+esp_err_t device_manager_update_sensor_reading(uint64_t ieee_addr, uint8_t endpoint,
+                                               int16_t raw_value, float converted_value,
+                                               device_type_t device_type);
+
+/**
+ * @brief Find device by IEEE address and endpoint
+ * @param ieee_addr 64-bit IEEE address
+ * @param endpoint Endpoint ID
+ * @param device Pointer to store device configuration
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND if not found
+ */
+esp_err_t device_manager_find_by_ieee_and_endpoint(uint64_t ieee_addr, uint8_t endpoint,
+                                                    device_config_t *device);
+
+/**
+ * @brief Get all sensor devices
+ * @param sensors Array to store sensor devices (must be at least MAX_DEVICES size)
+ * @param count Pointer to store number of sensors found
+ * @return ESP_OK on success
+ */
+esp_err_t device_manager_get_sensors(device_config_t *sensors, uint8_t *count);
+
 #ifdef __cplusplus
 }
 #endif

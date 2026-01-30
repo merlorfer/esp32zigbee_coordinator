@@ -316,10 +316,23 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
         cJSON_AddStringToObject(device, "model", dev.model);
         cJSON_AddStringToObject(device, "custom_name", dev.custom_name);
         cJSON_AddBoolToObject(device, "enabled", dev.enabled);
-        cJSON_AddStringToObject(device, "mode",
-                               dev.mode == MODE_FIXED_TIME ? "fixed_time" : "delay");
 
-        if (dev.mode == MODE_FIXED_TIME) {
+        // Add device type
+        const char *device_type_str = "on_off_light";
+        if (dev.device_type == DEVICE_TYPE_TEMPERATURE_SENSOR) {
+            device_type_str = "temperature_sensor";
+        } else if (dev.device_type == DEVICE_TYPE_HUMIDITY_SENSOR) {
+            device_type_str = "humidity_sensor";
+        }
+        cJSON_AddStringToObject(device, "device_type", device_type_str);
+
+        // For ON_OFF_LIGHT devices, add automation mode and schedule
+        if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT) {
+            cJSON_AddStringToObject(device, "mode",
+                                   dev.mode == MODE_FIXED_TIME ? "fixed_time" : "delay");
+        }
+
+        if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT && dev.mode == MODE_FIXED_TIME) {
             cJSON *time_pairs = cJSON_CreateArray();
             for (int j = 0; j < dev.time_pair_count; j++) {
                 cJSON *pair = cJSON_CreateObject();
@@ -333,11 +346,46 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
                 cJSON_AddItemToArray(time_pairs, pair);
             }
             cJSON_AddItemToObject(device, "time_pairs", time_pairs);
-        } else {
+        } else if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT && dev.mode == MODE_DELAY) {
             // 3-phase delay: OFF1 → ON → OFF2
             cJSON_AddNumberToObject(device, "delay_off1_minutes", dev.delay_off1_minutes);
             cJSON_AddNumberToObject(device, "delay_duration_minutes", dev.delay_duration_minutes);
             cJSON_AddNumberToObject(device, "delay_off2_minutes", dev.delay_off2_minutes);
+        }
+
+        // For sensor devices, add sensor configuration and reading
+        if (dev.device_type == DEVICE_TYPE_TEMPERATURE_SENSOR ||
+            dev.device_type == DEVICE_TYPE_HUMIDITY_SENSOR) {
+            cJSON *sensor = cJSON_CreateObject();
+            cJSON_AddNumberToObject(sensor, "lower_threshold", dev.sensor.lower_threshold);
+            cJSON_AddNumberToObject(sensor, "upper_threshold", dev.sensor.upper_threshold);
+            cJSON_AddNumberToObject(sensor, "lower_hysteresis", dev.sensor.lower_hysteresis);
+            cJSON_AddNumberToObject(sensor, "upper_hysteresis", dev.sensor.upper_hysteresis);
+
+            if (dev.sensor.lower_linked_device != 0) {
+                char linked_addr[20];
+                format_ieee_addr_hex(linked_addr, sizeof(linked_addr), dev.sensor.lower_linked_device);
+                cJSON_AddStringToObject(sensor, "lower_linked_device", linked_addr);
+            } else {
+                cJSON_AddNullToObject(sensor, "lower_linked_device");
+            }
+
+            if (dev.sensor.upper_linked_device != 0) {
+                char linked_addr[20];
+                format_ieee_addr_hex(linked_addr, sizeof(linked_addr), dev.sensor.upper_linked_device);
+                cJSON_AddStringToObject(sensor, "upper_linked_device", linked_addr);
+            } else {
+                cJSON_AddNullToObject(sensor, "upper_linked_device");
+            }
+
+            cJSON_AddNumberToObject(sensor, "timeout_seconds", dev.sensor.timeout_seconds);
+            cJSON_AddNumberToObject(sensor, "current_value", dev.reading.converted_value);
+            cJSON_AddNumberToObject(sensor, "last_update", dev.reading.last_update);
+            cJSON_AddBoolToObject(sensor, "valid", dev.reading.valid);
+            cJSON_AddBoolToObject(sensor, "lower_active", dev.sensor.lower_active);
+            cJSON_AddBoolToObject(sensor, "upper_active", dev.sensor.upper_active);
+
+            cJSON_AddItemToObject(device, "sensor", sensor);
         }
 
         // Check for error

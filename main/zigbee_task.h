@@ -72,6 +72,26 @@ bool zigbee_is_running(void);
  */
 esp_err_t zigbee_request_leave(uint64_t ieee_addr);
 
+/**
+ * @brief Reconfigure reporting for all sensors
+ *
+ * Sends configure_report commands to all sensors with retry mechanism.
+ * This is useful to wake sleeping battery-powered sensors before entering BLE mode.
+ *
+ * @return ESP_OK on success
+ */
+esp_err_t zigbee_reconfigure_all_sensors(void);
+
+/**
+ * @brief Read current data from all sensors
+ *
+ * Sends read_attribute commands to all sensors to get current values.
+ * This is useful to refresh sensor data before entering BLE mode.
+ *
+ * @return ESP_OK on success
+ */
+esp_err_t zigbee_read_all_sensor_data(void);
+
 #ifdef __cplusplus
 }
 #endif

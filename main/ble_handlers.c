@@ -88,10 +88,23 @@ static char *handle_get_devices(cJSON *params)
         cJSON_AddStringToObject(device, "model", dev.model);
         cJSON_AddStringToObject(device, "custom_name", dev.custom_name);
         cJSON_AddBoolToObject(device, "enabled", dev.enabled);
-        cJSON_AddStringToObject(device, "mode",
-                               dev.mode == MODE_FIXED_TIME ? "fixed_time" : "delay");
 
-        if (dev.mode == MODE_FIXED_TIME) {
+        // Add device type
+        const char *device_type_str = "on_off_light";
+        if (dev.device_type == DEVICE_TYPE_TEMPERATURE_SENSOR) {
+            device_type_str = "temperature_sensor";
+        } else if (dev.device_type == DEVICE_TYPE_HUMIDITY_SENSOR) {
+            device_type_str = "humidity_sensor";
+        }
+        cJSON_AddStringToObject(device, "device_type", device_type_str);
+
+        // For ON_OFF_LIGHT devices, add automation mode and schedule
+        if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT) {
+            cJSON_AddStringToObject(device, "mode",
+                                   dev.mode == MODE_FIXED_TIME ? "fixed_time" : "delay");
+        }
+
+        if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT && dev.mode == MODE_FIXED_TIME) {
             cJSON *time_pairs = cJSON_CreateArray();
             for (int j = 0; j < dev.time_pair_count; j++) {
                 cJSON *pair = cJSON_CreateObject();
@@ -105,11 +118,46 @@ static char *handle_get_devices(cJSON *params)
                 cJSON_AddItemToArray(time_pairs, pair);
             }
             cJSON_AddItemToObject(device, "time_pairs", time_pairs);
-        } else {
+        } else if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT && dev.mode == MODE_DELAY) {
             // 3-phase delay: OFF1 → ON → OFF2
             cJSON_AddNumberToObject(device, "delay_off1_minutes", dev.delay_off1_minutes);
             cJSON_AddNumberToObject(device, "delay_duration_minutes", dev.delay_duration_minutes);
             cJSON_AddNumberToObject(device, "delay_off2_minutes", dev.delay_off2_minutes);
+        }
+
+        // For sensor devices, add sensor configuration and reading
+        if (dev.device_type == DEVICE_TYPE_TEMPERATURE_SENSOR ||
+            dev.device_type == DEVICE_TYPE_HUMIDITY_SENSOR) {
+            cJSON *sensor = cJSON_CreateObject();
+            cJSON_AddNumberToObject(sensor, "lower_threshold", dev.sensor.lower_threshold);
+            cJSON_AddNumberToObject(sensor, "upper_threshold", dev.sensor.upper_threshold);
+            cJSON_AddNumberToObject(sensor, "lower_hysteresis", dev.sensor.lower_hysteresis);
+            cJSON_AddNumberToObject(sensor, "upper_hysteresis", dev.sensor.upper_hysteresis);
+
+            if (dev.sensor.lower_linked_device != 0) {
+                char linked_addr[20];
+                format_ieee_addr_hex(linked_addr, sizeof(linked_addr), dev.sensor.lower_linked_device);
+                cJSON_AddStringToObject(sensor, "lower_linked_device", linked_addr);
+            } else {
+                cJSON_AddNullToObject(sensor, "lower_linked_device");
+            }
+
+            if (dev.sensor.upper_linked_device != 0) {
+                char linked_addr[20];
+                format_ieee_addr_hex(linked_addr, sizeof(linked_addr), dev.sensor.upper_linked_device);
+                cJSON_AddStringToObject(sensor, "upper_linked_device", linked_addr);
+            } else {
+                cJSON_AddNullToObject(sensor, "upper_linked_device");
+            }
+
+            cJSON_AddNumberToObject(sensor, "timeout_seconds", dev.sensor.timeout_seconds);
+            cJSON_AddNumberToObject(sensor, "current_value", dev.reading.converted_value);
+            cJSON_AddNumberToObject(sensor, "last_update", dev.reading.last_update);
+            cJSON_AddBoolToObject(sensor, "valid", dev.reading.valid);
+            cJSON_AddBoolToObject(sensor, "lower_active", dev.sensor.lower_active);
+            cJSON_AddBoolToObject(sensor, "upper_active", dev.sensor.upper_active);
+
+            cJSON_AddItemToObject(device, "sensor", sensor);
         }
 
         // Check for error
@@ -479,6 +527,193 @@ static char *handle_set_global_settings(cJSON *params)
     return json_str;
 }
 
+static char *handle_configure_sensor_thresholds(cJSON *params)
+{
+    if (params == NULL) {
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddStringToObject(error, "status", "error");
+        cJSON_AddStringToObject(error, "message", "Missing params");
+        char *json_str = cJSON_PrintUnformatted(error);
+        cJSON_Delete(error);
+        return json_str;
+    }
+
+    // Parse IEEE address
+    cJSON *ieee_item = cJSON_GetObjectItem(params, "ieee_addr");
+    if (!cJSON_IsString(ieee_item)) {
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddStringToObject(error, "status", "error");
+        cJSON_AddStringToObject(error, "message", "Missing ieee_addr");
+        char *json_str = cJSON_PrintUnformatted(error);
+        cJSON_Delete(error);
+        return json_str;
+    }
+
+    uint64_t ieee_addr = 0;
+    sscanf(ieee_item->valuestring, "0x%llX", (unsigned long long *)&ieee_addr);
+
+    // Parse endpoint
+    cJSON *ep_item = cJSON_GetObjectItem(params, "endpoint");
+    uint8_t endpoint = cJSON_IsNumber(ep_item) ? (uint8_t)ep_item->valueint : 1;
+
+    // Get device
+    device_config_t dev;
+    if (device_manager_find_by_ieee_and_endpoint(ieee_addr, endpoint, &dev) != ESP_OK) {
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddStringToObject(error, "status", "error");
+        cJSON_AddStringToObject(error, "message", "Device not found");
+        char *json_str = cJSON_PrintUnformatted(error);
+        cJSON_Delete(error);
+        return json_str;
+    }
+
+    // Verify it's a sensor device
+    if (dev.device_type != DEVICE_TYPE_TEMPERATURE_SENSOR &&
+        dev.device_type != DEVICE_TYPE_HUMIDITY_SENSOR) {
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddStringToObject(error, "status", "error");
+        cJSON_AddStringToObject(error, "message", "Not a sensor device");
+        char *json_str = cJSON_PrintUnformatted(error);
+        cJSON_Delete(error);
+        return json_str;
+    }
+
+    // Update threshold configuration
+    cJSON *item;
+    if ((item = cJSON_GetObjectItem(params, "lower_threshold")) && cJSON_IsNumber(item)) {
+        dev.sensor.lower_threshold = (float)item->valuedouble;
+    }
+    if ((item = cJSON_GetObjectItem(params, "upper_threshold")) && cJSON_IsNumber(item)) {
+        dev.sensor.upper_threshold = (float)item->valuedouble;
+    }
+    if ((item = cJSON_GetObjectItem(params, "lower_hysteresis")) && cJSON_IsNumber(item)) {
+        dev.sensor.lower_hysteresis = (float)item->valuedouble;
+    }
+    if ((item = cJSON_GetObjectItem(params, "upper_hysteresis")) && cJSON_IsNumber(item)) {
+        dev.sensor.upper_hysteresis = (float)item->valuedouble;
+    }
+    if ((item = cJSON_GetObjectItem(params, "timeout_seconds")) && cJSON_IsNumber(item)) {
+        dev.sensor.timeout_seconds = (uint16_t)item->valueint;
+    }
+
+    // Save configuration
+    device_manager_update(dev.ieee_addr, &dev);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", "ok");
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json_str;
+}
+
+static char *handle_link_sensor_devices(cJSON *params)
+{
+    if (params == NULL) {
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddStringToObject(error, "status", "error");
+        cJSON_AddStringToObject(error, "message", "Missing params");
+        char *json_str = cJSON_PrintUnformatted(error);
+        cJSON_Delete(error);
+        return json_str;
+    }
+
+    // Parse sensor IEEE address
+    cJSON *ieee_item = cJSON_GetObjectItem(params, "sensor_ieee");
+    if (!cJSON_IsString(ieee_item)) {
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddStringToObject(error, "status", "error");
+        cJSON_AddStringToObject(error, "message", "Missing sensor_ieee");
+        char *json_str = cJSON_PrintUnformatted(error);
+        cJSON_Delete(error);
+        return json_str;
+    }
+
+    uint64_t sensor_ieee = 0;
+    sscanf(ieee_item->valuestring, "0x%llX", (unsigned long long *)&sensor_ieee);
+
+    // Parse endpoint
+    cJSON *ep_item = cJSON_GetObjectItem(params, "sensor_endpoint");
+    uint8_t endpoint = cJSON_IsNumber(ep_item) ? (uint8_t)ep_item->valueint : 1;
+
+    // Get sensor device
+    device_config_t dev;
+    if (device_manager_find_by_ieee_and_endpoint(sensor_ieee, endpoint, &dev) != ESP_OK) {
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddStringToObject(error, "status", "error");
+        cJSON_AddStringToObject(error, "message", "Sensor device not found");
+        char *json_str = cJSON_PrintUnformatted(error);
+        cJSON_Delete(error);
+        return json_str;
+    }
+
+    // Verify it's a sensor device
+    if (dev.device_type != DEVICE_TYPE_TEMPERATURE_SENSOR &&
+        dev.device_type != DEVICE_TYPE_HUMIDITY_SENSOR) {
+        cJSON *error = cJSON_CreateObject();
+        cJSON_AddStringToObject(error, "status", "error");
+        cJSON_AddStringToObject(error, "message", "Not a sensor device");
+        char *json_str = cJSON_PrintUnformatted(error);
+        cJSON_Delete(error);
+        return json_str;
+    }
+
+    // Parse lower linked device
+    cJSON *lower_item = cJSON_GetObjectItem(params, "lower_linked_device");
+    if (cJSON_IsString(lower_item) && strlen(lower_item->valuestring) > 0) {
+        uint64_t lower_ieee = 0;
+        sscanf(lower_item->valuestring, "0x%llX", (unsigned long long *)&lower_ieee);
+        dev.sensor.lower_linked_device = lower_ieee;
+    } else if (cJSON_IsNull(lower_item)) {
+        dev.sensor.lower_linked_device = 0;
+    }
+
+    // Parse upper linked device
+    cJSON *upper_item = cJSON_GetObjectItem(params, "upper_linked_device");
+    if (cJSON_IsString(upper_item) && strlen(upper_item->valuestring) > 0) {
+        uint64_t upper_ieee = 0;
+        sscanf(upper_item->valuestring, "0x%llX", (unsigned long long *)&upper_ieee);
+        dev.sensor.upper_linked_device = upper_ieee;
+    } else if (cJSON_IsNull(upper_item)) {
+        dev.sensor.upper_linked_device = 0;
+    }
+
+    // Validate linked devices are ON_OFF_LIGHT
+    if (dev.sensor.lower_linked_device != 0) {
+        device_config_t linked_dev;
+        if (device_manager_get(dev.sensor.lower_linked_device, &linked_dev) != ESP_OK ||
+            linked_dev.device_type != DEVICE_TYPE_ON_OFF_LIGHT) {
+            cJSON *error = cJSON_CreateObject();
+            cJSON_AddStringToObject(error, "status", "error");
+            cJSON_AddStringToObject(error, "message", "Lower linked device is not an ON_OFF_LIGHT");
+            char *json_str = cJSON_PrintUnformatted(error);
+            cJSON_Delete(error);
+            return json_str;
+        }
+    }
+
+    if (dev.sensor.upper_linked_device != 0) {
+        device_config_t linked_dev;
+        if (device_manager_get(dev.sensor.upper_linked_device, &linked_dev) != ESP_OK ||
+            linked_dev.device_type != DEVICE_TYPE_ON_OFF_LIGHT) {
+            cJSON *error = cJSON_CreateObject();
+            cJSON_AddStringToObject(error, "status", "error");
+            cJSON_AddStringToObject(error, "message", "Upper linked device is not an ON_OFF_LIGHT");
+            char *json_str = cJSON_PrintUnformatted(error);
+            cJSON_Delete(error);
+            return json_str;
+        }
+    }
+
+    // Save configuration
+    device_manager_update(dev.ieee_addr, &dev);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", "ok");
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json_str;
+}
+
 static char *handle_factory_reset(cJSON *params)
 {
     ESP_LOGW(TAG, "Factory reset requested via BLE");
@@ -573,6 +808,10 @@ char *ble_handlers_process_command(const char *json_str, size_t len)
         response = handle_set_global_settings(params);
     } else if (strcmp(cmd, "factory_reset") == 0) {
         response = handle_factory_reset(params);
+    } else if (strcmp(cmd, "configure_sensor_thresholds") == 0) {
+        response = handle_configure_sensor_thresholds(params);
+    } else if (strcmp(cmd, "link_sensor_devices") == 0) {
+        response = handle_link_sensor_devices(params);
     } else {
         cJSON *error = cJSON_CreateObject();
         cJSON_AddStringToObject(error, "status", "error");
