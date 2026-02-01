@@ -19,12 +19,20 @@ static const char *TAG = "SCHEDULER_TASK";
 extern EventGroupHandle_t g_event_group;
 extern QueueHandle_t g_cmd_queue;
 
+// Per-device phase tracking structure
+typedef struct {
+    uint64_t ieee_addr;
+    uint8_t last_phase;      // Track last phase (0=OFF1, 1=ON, 2=OFF2, 255=uninitialized)
+    bool last_state;         // Track last sent state
+} device_phase_tracking_t;
+
+#define MAX_TRACKED_DEVICES 10
+static device_phase_tracking_t s_device_phases[MAX_TRACKED_DEVICES] = {0};
+static uint8_t s_tracked_device_count = 0;
+
 static TaskHandle_t s_scheduler_task_handle = NULL;
 static bool s_scheduler_active = false;
 static uint32_t s_delay_cycle_start = 0;
-static bool s_last_delay_state = false;  // Track last sent delay state to detect transitions
-static uint8_t s_last_phase = 255;       // Track last phase (0=OFF1, 1=ON, 2=OFF2, 255=uninitialized)
-static bool s_delay_first_run = true;    // Force first command on startup
 
 /* Helper function to format IEEE address as hex string */
 static void format_ieee_addr_str(char *buf, size_t buf_size, uint64_t ieee_addr)
@@ -38,6 +46,31 @@ static void format_ieee_addr_str(char *buf, size_t buf_size, uint64_t ieee_addr)
              (uint8_t)((ieee_addr >> 16) & 0xFF),
              (uint8_t)((ieee_addr >> 8) & 0xFF),
              (uint8_t)(ieee_addr & 0xFF));
+}
+
+/* Get or create phase tracking for a device */
+static device_phase_tracking_t* get_device_phase_tracking(uint64_t ieee_addr)
+{
+    // Search for existing entry
+    for (uint8_t i = 0; i < s_tracked_device_count; i++) {
+        if (s_device_phases[i].ieee_addr == ieee_addr) {
+            return &s_device_phases[i];
+        }
+    }
+
+    // Create new entry if space available
+    if (s_tracked_device_count < MAX_TRACKED_DEVICES) {
+        device_phase_tracking_t *new_entry = &s_device_phases[s_tracked_device_count];
+        new_entry->ieee_addr = ieee_addr;
+        new_entry->last_phase = 255;  // Uninitialized
+        new_entry->last_state = false;
+        s_tracked_device_count++;
+        return new_entry;
+    }
+
+    // No space available, log error
+    ESP_LOGE(TAG, "Phase tracking full, cannot track more devices");
+    return NULL;
 }
 
 // ============================================================================
@@ -117,6 +150,12 @@ static void process_delay_mode(device_config_t *dev)
         return;
     }
 
+    // Get phase tracking for this device
+    device_phase_tracking_t *tracking = get_device_phase_tracking(dev->ieee_addr);
+    if (tracking == NULL) {
+        return;  // Cannot track this device
+    }
+
     uint32_t minutes_elapsed = get_minutes_since_cycle_start();
 
     // 3-phase cycle: OFF1 → ON → OFF2
@@ -160,10 +199,10 @@ static void process_delay_mode(device_config_t *dev)
 
     bool expected_state = (current_phase == 1);  // ON only in phase 1
 
-    // Send command when the phase changes (not just state)
+    // Send command when the phase changes or device is uninitialized (last_phase == 255)
     // This ensures OFF1 → OFF2 transitions are also handled
-    if (current_phase != s_last_phase || s_delay_first_run) {
-        s_delay_first_run = false;
+    // Use per-device phase tracking instead of global variables
+    if (current_phase != tracking->last_phase) {
         char ieee_str[24];
         format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
 
@@ -182,9 +221,9 @@ static void process_delay_mode(device_config_t *dev)
         };
         xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
 
-        // Track what we sent (both state and phase)
-        s_last_delay_state = expected_state;
-        s_last_phase = current_phase;
+        // Track what we sent for THIS device (both state and phase)
+        tracking->last_state = expected_state;
+        tracking->last_phase = current_phase;
     }
 }
 
@@ -287,7 +326,6 @@ esp_err_t scheduler_task_start(void)
         if (s_delay_cycle_start == 0) {
             s_delay_cycle_start = (uint32_t)time(NULL);
         }
-        s_delay_first_run = true;  // Force first command on resume
         ESP_LOGI(TAG, "Scheduler task resumed, delay cycle continues (start: %lu)", (unsigned long)s_delay_cycle_start);
         return ESP_OK;
     }
@@ -309,8 +347,10 @@ esp_err_t scheduler_task_start(void)
     s_scheduler_active = true;
     // Initialize delay cycle start time
     s_delay_cycle_start = (uint32_t)time(NULL);
-    s_delay_first_run = true;  // Force first command on start
-    s_last_phase = 255;  // Reset phase tracking
+    // Reset all device phase tracking
+    for (uint8_t i = 0; i < s_tracked_device_count; i++) {
+        s_device_phases[i].last_phase = 255;
+    }
     ESP_LOGI(TAG, "Scheduler task started, delay cycle initialized at %lu", (unsigned long)s_delay_cycle_start);
     return ESP_OK;
 }
@@ -330,8 +370,10 @@ void scheduler_task_resume(void)
         s_delay_cycle_start = (uint32_t)time(NULL);
     }
 
-    s_delay_first_run = true;  // Force first command on resume
-    s_last_phase = 255;  // Reset phase tracking
+    // Reset all device phase tracking to force immediate command on resume
+    for (uint8_t i = 0; i < s_tracked_device_count; i++) {
+        s_device_phases[i].last_phase = 255;
+    }
 
     ESP_LOGI(TAG, "Scheduler task resumed, delay cycle continues (start: %lu)", (unsigned long)s_delay_cycle_start);
 }
@@ -339,7 +381,9 @@ void scheduler_task_resume(void)
 void scheduler_reset_delay_cycles(void)
 {
     s_delay_cycle_start = (uint32_t)time(NULL);
-    s_delay_first_run = true;  // Force first command after reset
-    s_last_phase = 255;  // Reset phase tracking
+    // Reset all device phase tracking to force immediate command after reset
+    for (uint8_t i = 0; i < s_tracked_device_count; i++) {
+        s_device_phases[i].last_phase = 255;
+    }
     ESP_LOGI(TAG, "Delay cycles reset at timestamp %lu", (unsigned long)s_delay_cycle_start);
 }
