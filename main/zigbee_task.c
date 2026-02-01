@@ -1175,7 +1175,13 @@ esp_err_t zigbee_reconfigure_all_sensors(void)
             continue;
         }
 
-        uint16_t short_addr = esp_zb_ieee_to_short(sensors[i].ieee_addr);
+        // Convert uint64_t IEEE address to esp_zb_ieee_addr_t (8-byte array)
+        esp_zb_ieee_addr_t ieee;
+        for (int j = 0; j < 8; j++) {
+            ieee[j] = (sensors[i].ieee_addr >> (j * 8)) & 0xFF;
+        }
+
+        uint16_t short_addr = esp_zb_address_short_by_ieee(ieee);
         if (short_addr == 0xFFFF) {
             ESP_LOGW(TAG, "Sensor %d: short address not found", i);
             continue;
@@ -1227,7 +1233,13 @@ esp_err_t zigbee_read_all_sensor_data(void)
             continue;
         }
 
-        uint16_t short_addr = esp_zb_ieee_to_short(sensors[i].ieee_addr);
+        // Convert uint64_t IEEE address to esp_zb_ieee_addr_t (8-byte array)
+        esp_zb_ieee_addr_t ieee;
+        for (int j = 0; j < 8; j++) {
+            ieee[j] = (sensors[i].ieee_addr >> (j * 8)) & 0xFF;
+        }
+
+        uint16_t short_addr = esp_zb_address_short_by_ieee(ieee);
         if (short_addr == 0xFFFF) {
             ESP_LOGW(TAG, "Sensor %d: short address not found", i);
             continue;
