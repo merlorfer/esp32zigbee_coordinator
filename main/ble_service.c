@@ -27,6 +27,9 @@ static uint16_t s_chr_val_handle_sys_status;
 static char s_chunk_buffer[MAX_CHUNK_SIZE];
 static size_t s_chunk_offset = 0;
 
+// Maximum notification size (leave margin for MTU overhead and chunk header)
+#define MAX_NOTIFICATION_SIZE 220
+
 /* ============================================================================
  * Characteristic Access Callbacks
  * ============================================================================ */
@@ -253,6 +256,27 @@ esp_err_t ble_service_init(void)
     return ESP_OK;
 }
 
+/**
+ * @brief Send a single notification (internal helper)
+ */
+static esp_err_t ble_service_send_notification(uint16_t attr_handle, const char *data, size_t len)
+{
+    struct os_mbuf *om;
+    om = ble_hs_mbuf_from_flat(data, len);
+    if (om == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate mbuf for notification");
+        return ESP_FAIL;
+    }
+
+    int rc = ble_gattc_notify_custom(s_conn_handle, attr_handle, om);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to send notification; rc=%d", rc);
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
 esp_err_t ble_service_notify_response(const char *data, size_t len)
 {
     if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
@@ -268,20 +292,59 @@ esp_err_t ble_service_notify_response(const char *data, size_t len)
         ESP_LOGI(TAG, "Response data (first 200 bytes): %.*s...", 200, data);
     }
 
-    struct os_mbuf *om;
-    om = ble_hs_mbuf_from_flat(data, len);
-    if (om == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate mbuf for notification");
+    // If response fits in one notification, send it directly
+    if (len <= MAX_NOTIFICATION_SIZE) {
+        ESP_LOGI(TAG, "Sending response in single notification");
+        return ble_service_send_notification(s_chr_val_handle_cmd_res, data, len);
+    }
+
+    // Response is too large, send in chunks
+    ESP_LOGI(TAG, "Response too large, sending in chunks");
+
+    size_t offset = 0;
+    int chunk_num = 0;
+    int total_chunks = (len + MAX_NOTIFICATION_SIZE - 1) / MAX_NOTIFICATION_SIZE;
+
+    // Allocate buffer for chunk with header
+    char *chunk_buf = malloc(MAX_NOTIFICATION_SIZE + 32);
+    if (chunk_buf == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate chunk buffer");
         return ESP_FAIL;
     }
 
-    int rc = ble_gattc_notify_custom(s_conn_handle, s_chr_val_handle_cmd_res, om);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "Failed to send notification; rc=%d", rc);
-        return ESP_FAIL;
+    while (offset < len) {
+        size_t remaining = len - offset;
+        size_t chunk_data_size = (remaining > MAX_NOTIFICATION_SIZE)
+                                  ? MAX_NOTIFICATION_SIZE
+                                  : remaining;
+
+        // Create chunk header: [chunk_num/total_chunks]
+        char chunk_header[32];
+        int header_len = snprintf(chunk_header, sizeof(chunk_header), "[%d/%d]", chunk_num, total_chunks);
+
+        // Copy header and data to chunk buffer
+        memcpy(chunk_buf, chunk_header, header_len);
+        memcpy(chunk_buf + header_len, data + offset, chunk_data_size);
+        size_t total_chunk_len = header_len + chunk_data_size;
+
+        ESP_LOGI(TAG, "Sending chunk %d/%d, size=%d", chunk_num, total_chunks, (int)total_chunk_len);
+
+        esp_err_t ret = ble_service_send_notification(s_chr_val_handle_cmd_res, chunk_buf, total_chunk_len);
+        if (ret != ESP_OK) {
+            free(chunk_buf);
+            ESP_LOGE(TAG, "Failed to send chunk %d", chunk_num);
+            return ret;
+        }
+
+        // Small delay between chunks to avoid GATT congestion
+        vTaskDelay(pdMS_TO_TICKS(50));
+
+        offset += chunk_data_size;
+        chunk_num++;
     }
 
-    ESP_LOGI(TAG, "Response notification sent successfully");
+    free(chunk_buf);
+    ESP_LOGI(TAG, "All chunks sent successfully (%d chunks)", total_chunks);
     return ESP_OK;
 }
 

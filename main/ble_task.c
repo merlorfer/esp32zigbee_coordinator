@@ -236,6 +236,14 @@ static void ble_on_sync(void)
         return;
     }
 
+    // Set preferred MTU to support larger notifications
+    rc = ble_att_set_preferred_mtu(512);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "Failed to set preferred MTU; rc=%d", rc);
+    } else {
+        ESP_LOGI(TAG, "Preferred MTU set to 512 bytes");
+    }
+
     // Print BLE address
     uint8_t addr_val[6] = {0};
     rc = ble_hs_id_copy_addr(s_own_addr_type, addr_val, NULL);

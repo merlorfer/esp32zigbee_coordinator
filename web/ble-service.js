@@ -13,6 +13,10 @@ class BLEGateway {
         this.commandQueue = [];
         this.commandInProgress = false;
 
+        // Chunked response state
+        this.responseChunks = [];
+        this.expectedChunks = 0;
+
         // Store bound handlers to allow proper cleanup
         this._boundHandlers = {
             responseNotification: null,
@@ -214,8 +218,64 @@ class BLEGateway {
     _handleResponseNotification(event) {
         const decoder = new TextDecoder();
         const value = decoder.decode(event.target.value);
-        console.log('Received response:', value);
+        console.log('Received response:', value.substring(0, 100) + (value.length > 100 ? '...' : ''));
 
+        // Check if this is a chunked response
+        const chunkMatch = value.match(/^\[(\d+)\/(\d+)\]/);
+
+        if (chunkMatch) {
+            // This is a chunked response
+            const chunkNum = parseInt(chunkMatch[1]);
+            const totalChunks = parseInt(chunkMatch[2]);
+            const chunkData = value.substring(chunkMatch[0].length);
+
+            console.log(`Received chunk ${chunkNum}/${totalChunks}, size=${chunkData.length}`);
+
+            // Initialize chunks array on first chunk
+            if (chunkNum === 0) {
+                this.responseChunks = [];
+                this.expectedChunks = totalChunks;
+            }
+
+            // Store chunk
+            this.responseChunks[chunkNum] = chunkData;
+
+            // Check if all chunks received
+            if (this.responseChunks.filter(c => c !== undefined).length === totalChunks) {
+                console.log('All chunks received, reassembling...');
+                const fullResponse = this.responseChunks.join('');
+                console.log('Reassembled response length:', fullResponse.length);
+
+                // Clear chunks
+                this.responseChunks = [];
+                this.expectedChunks = 0;
+
+                // Parse and resolve
+                try {
+                    const response = JSON.parse(fullResponse);
+
+                    if (this.responseCallbacks.length > 0) {
+                        console.log('Processing chunked response, callbacks queue length:', this.responseCallbacks.length);
+                        const callback = this.responseCallbacks.shift();
+                        clearTimeout(callback.timeout);
+                        callback.resolve(response);
+                        console.log('Chunked response callback resolved successfully');
+                    } else {
+                        console.warn('Received chunked response but no callback waiting!');
+                    }
+                } catch (error) {
+                    console.error('Failed to parse reassembled response:', error);
+                    if (this.responseCallbacks.length > 0) {
+                        const callback = this.responseCallbacks.shift();
+                        clearTimeout(callback.timeout);
+                        callback.reject(error);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Non-chunked response - process normally
         try {
             const response = JSON.parse(value);
 
