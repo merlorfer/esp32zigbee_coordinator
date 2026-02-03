@@ -90,6 +90,7 @@ typedef struct {
     uint64_t ieee_addr;
     bool pending;
     uint8_t expected_responses;  // Number of simple descriptor responses we're waiting for
+    bool match_desc_attempted;   // True if match_desc fallback was already tried (prevents loop)
 } pending_discovery_t;
 
 static pending_discovery_t s_pending_discovery = {0};
@@ -97,13 +98,32 @@ static pending_discovery_t s_pending_discovery = {0};
 // Callback to clear pending discovery after timeout
 static void discovery_timeout_cb(uint8_t param)
 {
-    if (s_pending_discovery.pending) {
-        char ieee_str[24];
-        format_ieee_addr_u64(ieee_str, sizeof(ieee_str), s_pending_discovery.ieee_addr);
-        ESP_LOGW(TAG, "Device discovery timeout for %s - device does not support ON_OFF cluster or timeout occurred", ieee_str);
+    if (!s_pending_discovery.pending) {
+        return;
+    }
+
+    char ieee_str[24];
+    format_ieee_addr_u64(ieee_str, sizeof(ieee_str), s_pending_discovery.ieee_addr);
+
+    if (s_pending_discovery.match_desc_attempted) {
+        // Match descriptor also timed out — give up
+        ESP_LOGW(TAG, "Match descriptor also timed out for %s - device not supported", ieee_str);
         s_pending_discovery.pending = false;
         s_pending_discovery.expected_responses = 0;
+        return;
     }
+
+    // Simple descriptor timed out — try ZDO match_desc as fallback
+    ESP_LOGW(TAG, "Simple descriptor timeout for %s - trying match descriptor as fallback", ieee_str);
+    s_pending_discovery.match_desc_attempted = true;
+
+    esp_zb_zdo_match_desc_req_param_t match_req = {
+        .dst_addr = s_pending_discovery.short_addr,
+    };
+    find_on_off_device(&match_req, user_find_on_off_cb, NULL);
+
+    // Final timeout in case match_desc also fails/times out
+    esp_zb_scheduler_alarm(discovery_timeout_cb, 0, 5000);
 }
 
 // Forward declarations for device discovery
@@ -234,6 +254,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             s_pending_discovery.short_addr = dev_annce->device_short_addr;
             s_pending_discovery.ieee_addr = ieee_addr;
             s_pending_discovery.pending = true;
+            s_pending_discovery.match_desc_attempted = false;
 
             ESP_LOGI(TAG, "Starting device discovery for %s - requesting active endpoints", ieee_str);
 
@@ -869,10 +890,17 @@ static void user_find_on_off_cb(esp_zb_zdp_status_t zdo_status, uint16_t peer_ad
     } else {
         ESP_LOGW(TAG, "ON/OFF device search failed with status %d", zdo_status);
 
-        // Fallback: Try basic endpoint discovery
         if (s_pending_discovery.pending) {
-            ESP_LOGI(TAG, "Falling back to basic endpoint discovery");
-            request_active_endpoints(s_pending_discovery.short_addr);
+            if (s_pending_discovery.match_desc_attempted) {
+                // Already tried both paths, give up
+                ESP_LOGW(TAG, "Match descriptor search failed - device not supported");
+                s_pending_discovery.pending = false;
+                s_pending_discovery.expected_responses = 0;
+            } else {
+                // First attempt failed, fall back to endpoint discovery
+                ESP_LOGI(TAG, "Falling back to basic endpoint discovery");
+                request_active_endpoints(s_pending_discovery.short_addr);
+            }
         }
     }
 }
@@ -954,8 +982,8 @@ static void configure_sensor_reporting(uint16_t short_addr, uint8_t endpoint, ui
         .attributeID = 0x0000,  // Measured value attribute
         .attrType = (cluster_id == ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT) ?
                     ESP_ZB_ZCL_ATTR_TYPE_S16 : ESP_ZB_ZCL_ATTR_TYPE_U16,
-        .min_interval = 5,      // Minimum 5 seconds between reports
-        .max_interval = 20,     // Maximum 20 seconds between reports
+        .min_interval = 0,      // Minimum 0 seconds between reports
+        .max_interval = 10,     // Maximum 10 seconds between reports
         .reportable_change = &report_change,
     };
 
