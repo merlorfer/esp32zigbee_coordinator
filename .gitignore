@@ -23,6 +23,7 @@ __pycache__/
 
 # Logs
 *.log
+build_log.txt
 
 # Backup
 *.bak
@@ -31,3 +32,6 @@ __pycache__/
 # Managed components
 managed_components/
 dependencies.lock
+
+# Test project
+test_sensor_config/

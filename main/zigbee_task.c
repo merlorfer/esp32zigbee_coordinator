@@ -91,11 +91,22 @@ typedef struct {
     bool pending;
     uint8_t expected_responses;  // Number of simple descriptor responses we're waiting for
     bool match_desc_attempted;   // True if match_desc fallback was already tried (prevents loop)
+    bool find_light_attempted;   // True if esp_zb_zdo_find_on_off_light was already tried
 } pending_discovery_t;
 
 static pending_discovery_t s_pending_discovery = {0};
 
+// Forward declarations for device discovery
+static void find_on_off_device(esp_zb_zdo_match_desc_req_param_t *param, esp_zb_zdo_match_desc_callback_t user_cb, void *user_ctx);
+static void user_find_on_off_cb(esp_zb_zdp_status_t zdo_status, uint16_t peer_addr, uint8_t peer_endpoint, void *user_ctx);
+static void request_active_endpoints(uint16_t short_addr);
+static void active_ep_cb(esp_zb_zdp_status_t zdo_status, uint8_t ep_count, uint8_t *ep_list, void *user_ctx);
+static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc_1_1_t *simple_desc, void *user_ctx);
+static void configure_sensor_reporting(uint16_t short_addr, uint8_t endpoint, uint16_t cluster_id);
+
 // Callback to clear pending discovery after timeout
+// param=0: simple_desc phase timeout (or stale alarm after match_desc already started)
+// param=1: match_desc phase timeout — final give-up
 static void discovery_timeout_cb(uint8_t param)
 {
     if (!s_pending_discovery.pending) {
@@ -105,11 +116,32 @@ static void discovery_timeout_cb(uint8_t param)
     char ieee_str[24];
     format_ieee_addr_u64(ieee_str, sizeof(ieee_str), s_pending_discovery.ieee_addr);
 
-    if (s_pending_discovery.match_desc_attempted) {
-        // Match descriptor also timed out — give up
-        ESP_LOGW(TAG, "Match descriptor also timed out for %s - device not supported", ieee_str);
+    if (param == 2) {
+        // find_on_off_light phase timed out — final give up
+        ESP_LOGW(TAG, "find_on_off_light timed out for %s - device not supported", ieee_str);
         s_pending_discovery.pending = false;
         s_pending_discovery.expected_responses = 0;
+        return;
+    }
+
+    if (param == 1) {
+        if (s_pending_discovery.find_light_attempted) {
+            // find_on_off_light is in progress — this is the stale match_desc alarm,
+            // param=2 alarm will handle the final timeout
+            return;
+        }
+        // match_desc phase timed out — give up
+        ESP_LOGW(TAG, "Match descriptor timed out for %s - device not supported", ieee_str);
+        s_pending_discovery.pending = false;
+        s_pending_discovery.expected_responses = 0;
+        return;
+    }
+
+    // param == 0
+    if (s_pending_discovery.match_desc_attempted) {
+        // match_desc was already started (by simple_desc_cb error path).
+        // This is the stale param=0 alarm from active_ep_cb — set a fresh match_desc timeout.
+        esp_zb_scheduler_alarm(discovery_timeout_cb, 1, 5000);
         return;
     }
 
@@ -118,21 +150,14 @@ static void discovery_timeout_cb(uint8_t param)
     s_pending_discovery.match_desc_attempted = true;
 
     esp_zb_zdo_match_desc_req_param_t match_req = {
-        .dst_addr = s_pending_discovery.short_addr,
+        .dst_nwk_addr = s_pending_discovery.short_addr,
+        .addr_of_interest = s_pending_discovery.short_addr,
     };
     find_on_off_device(&match_req, user_find_on_off_cb, NULL);
 
-    // Final timeout in case match_desc also fails/times out
-    esp_zb_scheduler_alarm(discovery_timeout_cb, 0, 5000);
+    // Timeout in case match_desc response never arrives
+    esp_zb_scheduler_alarm(discovery_timeout_cb, 1, 5000);
 }
-
-// Forward declarations for device discovery
-static void find_on_off_device(esp_zb_zdo_match_desc_req_param_t *param, esp_zb_zdo_match_desc_callback_t user_cb, void *user_ctx);
-static void user_find_on_off_cb(esp_zb_zdp_status_t zdo_status, uint16_t peer_addr, uint8_t peer_endpoint, void *user_ctx);
-static void request_active_endpoints(uint16_t short_addr);
-static void active_ep_cb(esp_zb_zdp_status_t zdo_status, uint8_t ep_count, uint8_t *ep_list, void *user_ctx);
-static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc_1_1_t *simple_desc, void *user_ctx);
-static void configure_sensor_reporting(uint16_t short_addr, uint8_t endpoint, uint16_t cluster_id);
 
 // Pending command tracking for retry
 typedef struct {
@@ -255,6 +280,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             s_pending_discovery.ieee_addr = ieee_addr;
             s_pending_discovery.pending = true;
             s_pending_discovery.match_desc_attempted = false;
+            s_pending_discovery.find_light_attempted = false;
 
             ESP_LOGI(TAG, "Starting device discovery for %s - requesting active endpoints", ieee_str);
 
@@ -297,6 +323,27 @@ static esp_err_t zb_attribute_reporting_handler(esp_zb_zcl_report_attr_message_t
     ESP_LOGI(TAG, "  Source: 0x%04x", report->src_address.u.short_addr);
     ESP_LOGI(TAG, "  Source endpoint: %d", report->src_endpoint);
     ESP_LOGI(TAG, "  Cluster ID: 0x%04x", report->cluster);
+
+    // Auto-detect ON/OFF device from attribute report — handles devices that
+    // don't respond to simple_desc / match_desc (e.g. certain IKEA switches)
+    if (report->cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
+        esp_zb_lock_acquire(portMAX_DELAY);
+        uint8_t ieee_bytes[8];
+        esp_zb_ieee_address_by_short(report->src_address.u.short_addr, ieee_bytes);
+        esp_zb_lock_release();
+
+        uint64_t ieee_addr = ieee_to_uint64(ieee_bytes);
+
+        esp_err_t ret = device_manager_add(ieee_addr, report->src_endpoint, NULL, NULL);
+        if (ret == ESP_OK) {
+            char ieee_str[24];
+            format_ieee_addr_u64(ieee_str, sizeof(ieee_str), ieee_addr);
+            ESP_LOGI(TAG, "Auto-detected ON/OFF device %s ep=%d from attribute report",
+                     ieee_str, report->src_endpoint);
+        }
+        // ret == ESP_ERR_INVALID_STATE → already known, silent skip
+        return ESP_OK;
+    }
 
     // Check if this is a temperature or humidity measurement
     if (report->cluster != ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT &&
@@ -891,15 +938,29 @@ static void user_find_on_off_cb(esp_zb_zdp_status_t zdo_status, uint16_t peer_ad
         ESP_LOGW(TAG, "ON/OFF device search failed with status %d", zdo_status);
 
         if (s_pending_discovery.pending) {
-            if (s_pending_discovery.match_desc_attempted) {
-                // Already tried both paths, give up
-                ESP_LOGW(TAG, "Match descriptor search failed - device not supported");
-                s_pending_discovery.pending = false;
-                s_pending_discovery.expected_responses = 0;
-            } else {
+            if (!s_pending_discovery.match_desc_attempted) {
                 // First attempt failed, fall back to endpoint discovery
                 ESP_LOGI(TAG, "Falling back to basic endpoint discovery");
                 request_active_endpoints(s_pending_discovery.short_addr);
+            } else if (!s_pending_discovery.find_light_attempted) {
+                // match_desc failed — try esp_zb_zdo_find_on_off_light (SDK convenience,
+                // may handle edge cases that raw match_cluster misses)
+                ESP_LOGI(TAG, "match_desc failed, trying esp_zb_zdo_find_on_off_light");
+                s_pending_discovery.find_light_attempted = true;
+
+                esp_zb_zdo_match_desc_req_param_t find_req = {
+                    .dst_nwk_addr = s_pending_discovery.short_addr,
+                    .addr_of_interest = s_pending_discovery.short_addr,
+                };
+                esp_zb_zdo_find_on_off_light(&find_req, user_find_on_off_cb, NULL);
+
+                // Timeout in case find_on_off_light response never arrives
+                esp_zb_scheduler_alarm(discovery_timeout_cb, 2, 5000);
+            } else {
+                // All ZDP methods exhausted — give up (attribute-report auto-detect may still catch it)
+                ESP_LOGW(TAG, "All discovery methods failed - device not supported");
+                s_pending_discovery.pending = false;
+                s_pending_discovery.expected_responses = 0;
             }
         }
     }
@@ -1021,6 +1082,68 @@ static void configure_sensor_reporting(uint16_t short_addr, uint8_t endpoint, ui
     }
 }
 
+/* --------------- sensor bind (sensor → coordinator) --------------- */
+typedef struct {
+    esp_zb_zdo_bind_req_param_t bind_req;   /* embedded — SDK tartja a pointerét a callback-ig */
+    uint16_t                    short_addr;
+    uint8_t                     endpoint;
+    uint16_t                    cluster_id;
+} sensor_bind_ctx_t;
+
+static void sensor_bind_cb(esp_zb_zdp_status_t status, void *user_ctx)
+{
+    sensor_bind_ctx_t *ctx = (sensor_bind_ctx_t *)user_ctx;
+
+    if (status == ESP_ZB_ZDP_STATUS_SUCCESS) {
+        ESP_LOGI(TAG, "Sensor bind SUCCESS: 0x%04x ep=%d cluster=0x%04x",
+                 ctx->short_addr, ctx->endpoint, ctx->cluster_id);
+    } else {
+        ESP_LOGW(TAG, "Sensor bind FAILED (status=%d): 0x%04x ep=%d cluster=0x%04x — configure anyway",
+                 status, ctx->short_addr, ctx->endpoint, ctx->cluster_id);
+    }
+
+    /* configure_sensor_reporting fut a bind eredménytől függetlenül */
+    configure_sensor_reporting(ctx->short_addr, ctx->endpoint, ctx->cluster_id);
+    free(ctx);
+}
+
+/**
+ * @brief Bind a sensor to the coordinator, then configure reporting.
+ *        Bind tells the sensor: "report cluster X to coordinator endpoint Y".
+ *        Called from simple_desc_cb — async, configure runs in sensor_bind_cb.
+ */
+static void bind_sensor(uint16_t short_addr, uint8_t endpoint, uint16_t cluster_id)
+{
+    sensor_bind_ctx_t *ctx = calloc(1, sizeof(sensor_bind_ctx_t));
+    if (!ctx) {
+        ESP_LOGE(TAG, "OOM sensor_bind_ctx — fallback direct configure");
+        configure_sensor_reporting(short_addr, endpoint, cluster_id);
+        return;
+    }
+    ctx->short_addr = short_addr;
+    ctx->endpoint   = endpoint;
+    ctx->cluster_id = cluster_id;
+
+    /* sensor IEEE from pending discovery (already resolved) */
+    uint8_t sensor_ieee[8];
+    uint64_to_ieee(s_pending_discovery.ieee_addr, sensor_ieee);
+
+    /* bind_req: sensor → koordinátor
+     *   src  = sensor (report forrás)
+     *   dst  = koordinátor (report célja) */
+    ctx->bind_req.req_dst_addr = short_addr;   /* a bind request-et a sensor-nak küldve */
+    memcpy(ctx->bind_req.src_address, sensor_ieee, sizeof(esp_zb_ieee_addr_t));
+    ctx->bind_req.src_endp      = endpoint;
+    ctx->bind_req.cluster_id    = cluster_id;
+    ctx->bind_req.dst_addr_mode = ESP_ZB_ZDO_BIND_DST_ADDR_MODE_64_BIT_EXTENDED;
+    esp_zb_get_long_address(ctx->bind_req.dst_address_u.addr_long);   /* koordinátor IEEE */
+    ctx->bind_req.dst_endp      = HA_GATEWAY_ENDPOINT;
+
+    ESP_LOGI(TAG, "Binding sensor 0x%04x ep=%d cluster=0x%04x → coordinator ep=%d",
+             short_addr, endpoint, cluster_id, HA_GATEWAY_ENDPOINT);
+    esp_zb_zdo_device_bind_req(&ctx->bind_req, sensor_bind_cb, ctx);
+}
+
 static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc_1_1_t *simple_desc, void *user_ctx)
 {
     uint8_t endpoint = (uint8_t)(uintptr_t)user_ctx;
@@ -1032,8 +1155,23 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
         if (s_pending_discovery.pending && s_pending_discovery.expected_responses > 0) {
             s_pending_discovery.expected_responses--;
             if (s_pending_discovery.expected_responses == 0) {
-                ESP_LOGW(TAG, "All simple descriptor requests completed, no ON_OFF device found");
-                s_pending_discovery.pending = false;
+                // All simple descriptors failed/returned nothing — try match_desc fallback
+                if (!s_pending_discovery.match_desc_attempted) {
+                    ESP_LOGW(TAG, "All simple descriptors failed, trying match descriptor fallback");
+                    s_pending_discovery.match_desc_attempted = true;
+
+                    esp_zb_zdo_match_desc_req_param_t match_req = {
+                        .dst_nwk_addr = s_pending_discovery.short_addr,
+                        .addr_of_interest = s_pending_discovery.short_addr,
+                    };
+                    find_on_off_device(&match_req, user_find_on_off_cb, NULL);
+                    // No alarm here — the existing param=0 alarm (from active_ep_cb)
+                    // will fire shortly, see match_desc_attempted=true, and set
+                    // a fresh param=1 alarm for 5s match_desc timeout.
+                } else {
+                    ESP_LOGW(TAG, "All simple descriptor requests completed, no supported device found");
+                    s_pending_discovery.pending = false;
+                }
             }
         }
         return;
@@ -1100,9 +1238,9 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "Temperature sensor added successfully");
             device_added = true;
-            // Configure reporting for temperature sensor
-            configure_sensor_reporting(s_pending_discovery.short_addr, endpoint,
-                                      ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT);
+            // Bind sensor → coordinator, then configure reporting in callback
+            bind_sensor(s_pending_discovery.short_addr, endpoint,
+                        ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT);
         } else if (ret == ESP_ERR_INVALID_STATE) {
             ESP_LOGI(TAG, "Temperature sensor already exists");
             device_added = true;  // Consider it added
@@ -1119,9 +1257,9 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "Humidity sensor added successfully");
             device_added = true;
-            // Configure reporting for humidity sensor (with retry mechanism for sleeping sensors)
-            configure_sensor_reporting(s_pending_discovery.short_addr, endpoint,
-                                      ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT);
+            // Bind sensor → coordinator, then configure reporting in callback
+            bind_sensor(s_pending_discovery.short_addr, endpoint,
+                        ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT);
         } else if (ret == ESP_ERR_INVALID_STATE) {
             ESP_LOGI(TAG, "Humidity sensor already exists");
             device_added = true;  // Consider it added
