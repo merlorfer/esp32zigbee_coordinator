@@ -143,6 +143,21 @@ esp_err_t device_manager_set_global_config(const global_config_t *config);
  * @param model Model identifier (can be NULL)
  * @return ESP_OK on success, ESP_ERR_NO_MEM if device limit reached
  */
+/**
+ * @brief Find device index by IEEE address and device type
+ */
+int device_manager_find_index_by_type(uint64_t ieee_addr, device_type_t device_type);
+
+/**
+ * @brief Get device by IEEE address and device type
+ */
+esp_err_t device_manager_get_by_type(uint64_t ieee_addr, device_type_t device_type, device_config_t *device);
+
+/**
+ * @brief Update device by IEEE address and device type
+ */
+esp_err_t device_manager_update_by_type(uint64_t ieee_addr, device_type_t device_type, const device_config_t *device);
+
 esp_err_t device_manager_add_sensor(uint64_t ieee_addr, uint8_t endpoint,
                                     device_type_t device_type,
                                     const char *manufacturer, const char *model);
@@ -177,6 +192,15 @@ esp_err_t device_manager_find_by_ieee_and_endpoint(uint64_t ieee_addr, uint8_t e
  * @return ESP_OK on success
  */
 esp_err_t device_manager_get_sensors(device_config_t *sensors, uint8_t *count);
+
+/**
+ * @brief Update battery level for all sensor devices with matching IEEE
+ * @param ieee_addr 64-bit IEEE address
+ * @param battery_percent Battery percentage 0-100 (0xFF = don't update)
+ * @param battery_voltage_100mv Battery voltage in 100mV units (0xFF = don't update)
+ * @return ESP_OK on success
+ */
+esp_err_t device_manager_update_battery(uint64_t ieee_addr, uint8_t battery_percent, uint8_t battery_voltage_100mv);
 
 #ifdef __cplusplus
 }

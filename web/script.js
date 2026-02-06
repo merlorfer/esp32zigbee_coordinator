@@ -8,6 +8,7 @@ let devices = [];
 // permitJoinTimer removed - pairing is done via physical button
 let clockInterval = null;
 let currentEditDevice = null;
+let modalDirty = false;
 let espTimeOffset = 0;  // Offset between ESP RTC and local time
 let espTimeInitialized = false;
 let zigbeeActive = false;
@@ -140,16 +141,45 @@ function updateBLEStatus(connected, statusMessage) {
             modalDisconnectBtn.classList.add('hidden');
         }
     }
+
+    // Update sticky BLE status bar
+    const stickyIndicator = document.getElementById('sticky-ble-indicator');
+    const stickyStatusText = document.getElementById('sticky-ble-text');
+    const stickyConnectBtn = document.getElementById('sticky-ble-connect-btn');
+    const stickyDisconnectBtn = document.getElementById('sticky-ble-disconnect-btn');
+
+    if (stickyIndicator) {
+        stickyIndicator.className = connected ? 'status-dot connected' : 'status-dot disconnected';
+    }
+    if (stickyStatusText) {
+        stickyStatusText.textContent = 'BLE: ' + statusMessage;
+    }
+    if (stickyConnectBtn) {
+        if (connected) {
+            stickyConnectBtn.classList.add('hidden');
+        } else {
+            stickyConnectBtn.classList.remove('hidden');
+        }
+    }
+    if (stickyDisconnectBtn) {
+        if (connected) {
+            stickyDisconnectBtn.classList.remove('hidden');
+        } else {
+            stickyDisconnectBtn.classList.add('hidden');
+        }
+    }
 }
 
 async function connectBLE() {
     const connectBtn = document.getElementById('ble-connect-btn');
     const modalConnectBtn = document.getElementById('modal-ble-connect-btn');
+    const stickyConnectBtn = document.getElementById('sticky-ble-connect-btn');
 
     try {
         // Disable connect buttons
         if (connectBtn) connectBtn.disabled = true;
         if (modalConnectBtn) modalConnectBtn.disabled = true;
+        if (stickyConnectBtn) stickyConnectBtn.disabled = true;
 
         updateBLEStatus(false, 'Csatlakozas...');
 
@@ -209,6 +239,7 @@ async function connectBLE() {
         // Re-enable connect buttons
         if (connectBtn) connectBtn.disabled = false;
         if (modalConnectBtn) modalConnectBtn.disabled = false;
+        if (stickyConnectBtn) stickyConnectBtn.disabled = false;
 
         updateBLEStatus(false, 'Kapcsolat sikertelen');
         bleConnected = false;
@@ -227,8 +258,10 @@ function disconnectBLE() {
     // Re-enable connect buttons
     const connectBtn = document.getElementById('ble-connect-btn');
     const modalConnectBtn = document.getElementById('modal-ble-connect-btn');
+    const stickyConnectBtn = document.getElementById('sticky-ble-connect-btn');
     if (connectBtn) connectBtn.disabled = false;
     if (modalConnectBtn) modalConnectBtn.disabled = false;
+    if (stickyConnectBtn) stickyConnectBtn.disabled = false;
 
     // RESTART WiFi polling intervals ONLY if they don't exist
     // Clear first to prevent duplicates
@@ -514,6 +547,18 @@ async function loadDevices() {
         console.log('loadDevices: Device count:', data.devices ? data.devices.length : 0);
         devices = data.devices || [];
         renderDevices();
+
+        // Refresh open modal if a device is being edited and user hasn't modified fields
+        if (currentEditDevice && !modalDirty && !document.getElementById('device-modal').classList.contains('hidden')) {
+            const updated = devices.find(d =>
+                d.ieee_addr === currentEditDevice.ieee_addr &&
+                d.endpoint === currentEditDevice.endpoint &&
+                d.device_type === currentEditDevice.device_type
+            );
+            if (updated) {
+                editDevice(updated.ieee_addr, updated.endpoint, updated.device_type);
+            }
+        }
     } catch (error) {
         console.error('Device load error:', error);
     }
@@ -545,7 +590,7 @@ async function refreshDevices() {
 
 // permitJoin() and startPermitJoinTimer() removed - pairing is done via physical button on ESP
 
-async function deleteDevice(ieeeAddr) {
+async function deleteDevice(ieeeAddr, endpoint) {
     if (!confirm('Biztosan torolni szeretne ezt az eszkozt?')) {
         return;
     }
@@ -557,7 +602,7 @@ async function deleteDevice(ieeeAddr) {
             showToast('Eszkoz torolve');
 
             // Remove device from local array immediately for instant UI update
-            devices = devices.filter(d => d.ieee_addr !== ieeeAddr);
+            devices = devices.filter(d => !(d.ieee_addr === ieeeAddr && d.endpoint === endpoint));
             renderDevices();
 
             // Also reload from server after a short delay (especially for BLE)
@@ -575,21 +620,44 @@ async function deleteDevice(ieeeAddr) {
 
 async function saveDeviceConfig() {
     const ieeeAddr = document.getElementById('edit-ieee-addr').value;
-    const mode = document.getElementById('edit-mode').value;
+    const deviceType = document.getElementById('edit-device-type').value;
+    const isSensor = deviceType === 'temperature_sensor' || deviceType === 'humidity_sensor';
 
     const config = {
         custom_name: document.getElementById('edit-name').value,
-        enabled: document.getElementById('edit-enabled').checked,
-        mode: mode
+        device_type: deviceType
     };
 
-    if (mode === 'fixed_time') {
-        config.time_pairs = getTimePairs();
+    if (isSensor) {
+        const errorLinkedVal = document.getElementById('edit-error-linked').value;
+        const errorActionRadio = document.querySelector('input[name="error-action"]:checked');
+
+        config.sensor = {
+            lower_threshold: parseFloat(document.getElementById('edit-lower-threshold').value),
+            lower_hysteresis: parseFloat(document.getElementById('edit-lower-hysteresis').value),
+            upper_threshold: parseFloat(document.getElementById('edit-upper-threshold').value),
+            upper_hysteresis: parseFloat(document.getElementById('edit-upper-hysteresis').value),
+            lower_linked_device: document.getElementById('edit-lower-linked').value || null,
+            upper_linked_device: document.getElementById('edit-upper-linked').value || null,
+            timeout_seconds: parseInt(document.getElementById('edit-timeout').value),
+            error_linked_device: errorLinkedVal || null,
+            error_action_on: errorActionRadio ? errorActionRadio.value === 'on' : false,
+            report_min_interval: parseInt(document.getElementById('edit-report-min').value),
+            report_max_interval: parseInt(document.getElementById('edit-report-max').value),
+            report_change: parseInt(document.getElementById('edit-report-change').value)
+        };
     } else {
-        // 3-phase delay: OFF1 → ON → OFF2
-        config.delay_off1_minutes = parseInt(document.getElementById('edit-delay-off1').value);
-        config.delay_duration_minutes = parseInt(document.getElementById('edit-delay-duration').value);
-        config.delay_off2_minutes = parseInt(document.getElementById('edit-delay-off2').value);
+        const mode = document.getElementById('edit-mode').value;
+        config.enabled = document.getElementById('edit-enabled').checked;
+        config.mode = mode;
+
+        if (mode === 'fixed_time') {
+            config.time_pairs = getTimePairs();
+        } else {
+            config.delay_off1_minutes = parseInt(document.getElementById('edit-delay-off1').value);
+            config.delay_duration_minutes = parseInt(document.getElementById('edit-delay-duration').value);
+            config.delay_off2_minutes = parseInt(document.getElementById('edit-delay-off2').value);
+        }
     }
 
     try {
@@ -686,69 +754,265 @@ function renderDevices() {
         return;
     }
 
-    container.innerHTML = devices.map(device => `
-        <div class="device-item">
+    container.innerHTML = devices.map(device => {
+        if (device.device_type === 'temperature_sensor' || device.device_type === 'humidity_sensor') {
+            return renderSensorCard(device);
+        }
+        return renderOnOffCard(device);
+    }).join('');
+}
+
+function renderOnOffCard(device) {
+    const sensorControllers = getSensorControlInfo(device.ieee_addr);
+    const isSensorControlled = sensorControllers.length > 0;
+
+    let sensorBadgesHtml = '';
+    if (isSensorControlled) {
+        const badges = sensorControllers.map(s => {
+            const roles = [];
+            if (s.sensor.lower_linked_device === device.ieee_addr) roles.push('also korlat');
+            if (s.sensor.upper_linked_device === device.ieee_addr) roles.push('felso korlat');
+            if (s.sensor.error_linked_device === device.ieee_addr) roles.push('hiba');
+            return `<span class="sensor-control-badge">${escapeHtml(s.custom_name)} (${roles.join(', ')})</span>`;
+        }).join('');
+        sensorBadgesHtml = `<div class="sensor-control-info">Szenzor vezerles: ${badges}</div>`;
+    }
+
+    return `
+        <div class="device-item${isSensorControlled ? ' sensor-controlled' : ''}">
             <div class="device-info">
                 <div class="device-name">${escapeHtml(device.custom_name)}</div>
                 <div class="device-manufacturer">${escapeHtml(device.manufacturer || 'Ismeretlen gyarto')}</div>
                 <div class="device-model">${escapeHtml(device.model || 'Ismeretlen model')}</div>
                 <div class="device-addr">${device.ieee_addr} | EP: ${device.endpoint}</div>
+                ${sensorBadgesHtml}
                 <div class="device-status">
-                    <span class="state-badge ${device.enabled ? 'state-on' : 'state-off'}">
-                        ${device.enabled ? 'Automatizacio BE' : 'Automatizacio KI'}
-                    </span>
-                    ${device.error ? `
-                        <span class="error-badge">
-                            &#9888; ${escapeHtml(device.error.message)} (${device.error.timestamp})
-                        </span>
-                    ` : ''}
+                    ${isSensorControlled
+                        ? '<span class="state-badge state-sensor">Szenzor vezerelt</span>'
+                        : `<span class="state-badge ${device.enabled ? 'state-on' : 'state-off'}">
+                            ${device.enabled ? 'Automatizacio BE' : 'Automatizacio KI'}
+                          </span>`
+                    }
+                    ${device.error ? `<span class="error-badge">&#9888; ${escapeHtml(device.error.message)} (${device.error.timestamp})</span>` : ''}
                 </div>
             </div>
             <div class="device-actions">
-                <button onclick="editDevice('${device.ieee_addr}')" class="btn btn-primary btn-small">
-                    Szerkesztes
-                </button>
-                <button onclick="deleteDevice('${device.ieee_addr}')" class="btn btn-danger btn-small">
-                    Torles
-                </button>
+                <button onclick="editDevice('${device.ieee_addr}', ${device.endpoint}, '${device.device_type}')" class="btn btn-primary btn-small">Szerkesztes</button>
+                <button onclick="deleteDevice('${device.ieee_addr}', ${device.endpoint})" class="btn btn-danger btn-small">Torles</button>
             </div>
-        </div>
-    `).join('');
+        </div>`;
+}
+
+function renderSensorCard(device) {
+    const sensor = device.sensor || {};
+    const unit = device.device_type === 'temperature_sensor' ? '°C' : '%';
+    const valueStr = (sensor.valid && typeof sensor.current_value === 'number') ? sensor.current_value.toFixed(1) : '--';
+    const batteryHtml = renderBatteryInfo(sensor);
+    const errorHtml = (!sensor.valid && sensor.last_update > 0)
+        ? '<span class="error-badge">&#9888; Sensor timeout</span>' : '';
+
+    return `
+        <div class="device-item sensor-device">
+            <div class="device-info">
+                <div class="device-name">${escapeHtml(device.custom_name)}</div>
+                <div class="device-manufacturer">${escapeHtml(device.manufacturer || 'Ismeretlen gyarto')}</div>
+                <div class="device-model">${escapeHtml(device.model || 'Ismeretlen model')}</div>
+                <div class="device-addr">${device.ieee_addr} | EP: ${device.endpoint}</div>
+                <div class="sensor-value-display">
+                    <span class="sensor-value-number">${valueStr}</span>
+                    <span class="sensor-value-unit">${unit}</span>
+                </div>
+                ${batteryHtml}
+                <div class="device-status">${errorHtml}</div>
+            </div>
+            <div class="device-actions">
+                <button onclick="editDevice('${device.ieee_addr}', ${device.endpoint}, '${device.device_type}')" class="btn btn-primary btn-small">Szerkesztes</button>
+                <button onclick="deleteDevice('${device.ieee_addr}', ${device.endpoint})" class="btn btn-danger btn-small">Torles</button>
+            </div>
+        </div>`;
+}
+
+function renderBatteryInfo(sensor) {
+    if (sensor.battery_percent === 255 && sensor.battery_voltage_100mv === 255) {
+        return '';
+    }
+
+    const hasPercent = sensor.battery_percent !== 255;
+    const hasVoltage = sensor.battery_voltage_100mv !== 255;
+    const percentStr = hasPercent ? sensor.battery_percent + '%' : '?';
+    const voltageStr = hasVoltage ? (sensor.battery_voltage_100mv / 10).toFixed(1) + 'V' : '';
+
+    let barClass = 'battery-high';
+    if (hasPercent) {
+        if (sensor.battery_percent < 20) barClass = 'battery-low';
+        else if (sensor.battery_percent < 50) barClass = 'battery-mid';
+    }
+    const barWidth = hasPercent ? Math.min(sensor.battery_percent, 100) : 50;
+
+    return `
+        <div class="sensor-battery">
+            <span class="battery-label">Akku:</span>
+            <div class="battery-bar-bg">
+                <div class="battery-bar ${barClass}" style="width: ${barWidth}%"></div>
+            </div>
+            <span class="battery-text">${percentStr}${voltageStr ? ' ' + voltageStr : ''}</span>
+        </div>`;
+}
+
+function getOnOffDevices() {
+    return devices.filter(d => d.device_type === 'on_off_light');
+}
+
+function getSensorControlInfo(ieeeAddr) {
+    return devices.filter(d =>
+        (d.device_type === 'temperature_sensor' || d.device_type === 'humidity_sensor') &&
+        d.sensor && (
+            d.sensor.lower_linked_device === ieeeAddr ||
+            d.sensor.upper_linked_device === ieeeAddr ||
+            d.sensor.error_linked_device === ieeeAddr
+        )
+    );
+}
+
+function renderLinkedDeviceSelect(selectId, currentValue) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    const onOffDevs = getOnOffDevices();
+    select.innerHTML = '<option value="">-- Nincs --</option>' +
+        onOffDevs.map(d => `<option value="${d.ieee_addr}" ${d.ieee_addr === currentValue ? 'selected' : ''}>
+            ${escapeHtml(d.custom_name)} (${d.ieee_addr})
+        </option>`).join('');
+}
+
+function updateErrorActionVisibility() {
+    const errorLinked = document.getElementById('edit-error-linked').value;
+    const errorActionGroup = document.getElementById('error-action-group');
+    if (errorLinked) {
+        errorActionGroup.classList.remove('hidden');
+    } else {
+        errorActionGroup.classList.add('hidden');
+    }
+}
+
+function updateThresholdLogicDisplay() {
+    const lowerT = parseFloat(document.getElementById('edit-lower-threshold').value) || 0;
+    const lowerH = parseFloat(document.getElementById('edit-lower-hysteresis').value) || 0;
+    const upperT = parseFloat(document.getElementById('edit-upper-threshold').value) || 0;
+    const upperH = parseFloat(document.getElementById('edit-upper-hysteresis').value) || 0;
+    const deviceType = document.getElementById('edit-device-type').value;
+    const unit = deviceType === 'humidity_sensor' ? '%' : '°C';
+
+    const lowerDiv = document.getElementById('lower-threshold-logic');
+    if (lowerDiv) {
+        lowerDiv.innerHTML =
+            `<span class="logic-on">ertek &lt; ${lowerT.toFixed(1)}${unit} → BE</span>` +
+            `<span class="logic-off">ertek &gt; ${(lowerT + lowerH).toFixed(1)}${unit} → KI</span>`;
+    }
+
+    const upperDiv = document.getElementById('upper-threshold-logic');
+    if (upperDiv) {
+        upperDiv.innerHTML =
+            `<span class="logic-on">ertek &gt; ${upperT.toFixed(1)}${unit} → BE</span>` +
+            `<span class="logic-off">ertek &lt; ${(upperT - upperH).toFixed(1)}${unit} → KI</span>`;
+    }
+}
+
+function updateReportChangeDisplay() {
+    const rawValue = parseInt(document.getElementById('edit-report-change').value) || 50;
+    const deviceType = document.getElementById('edit-device-type').value;
+    const converted = (rawValue / 100).toFixed(2);
+    const unit = deviceType === 'humidity_sensor' ? '%' : '°C';
+    document.getElementById('report-change-display').textContent = converted;
+    document.getElementById('report-change-unit').textContent = unit;
 }
 
 // ============================================================================
 // Modal Functions
 // ============================================================================
 
-function editDevice(ieeeAddr) {
-    const device = devices.find(d => d.ieee_addr === ieeeAddr);
+function editDevice(ieeeAddr, endpoint, deviceType) {
+    const device = devices.find(d => d.ieee_addr === ieeeAddr && d.endpoint === endpoint && d.device_type === deviceType);
     if (!device) return;
 
     currentEditDevice = device;
+    modalDirty = false;
     document.getElementById('edit-ieee-addr').value = ieeeAddr;
     document.getElementById('edit-name').value = device.custom_name || '';
-    document.getElementById('edit-enabled').checked = device.enabled;
-    document.getElementById('edit-mode').value = device.mode;
+    document.getElementById('edit-device-type').value = device.device_type || 'on_off_light';
 
-    // Set delay values (3-phase)
-    // Use explicit undefined check to allow 0 values
-    document.getElementById('edit-delay-off1').value = (device.delay_off1_minutes !== undefined) ? device.delay_off1_minutes : 0;
-    document.getElementById('edit-delay-duration').value = (device.delay_duration_minutes !== undefined) ? device.delay_duration_minutes : 120;
-    document.getElementById('edit-delay-off2').value = (device.delay_off2_minutes !== undefined) ? device.delay_off2_minutes : 30;
+    const isSensor = device.device_type === 'temperature_sensor' || device.device_type === 'humidity_sensor';
+    document.getElementById('onoff-settings').classList.toggle('hidden', isSensor);
+    document.getElementById('sensor-settings').classList.toggle('hidden', !isSensor);
 
-    // Set time pairs
-    renderTimePairs(device.time_pairs || [{ on: '06:00', off: '18:00' }]);
+    if (isSensor) {
+        const sensor = device.sensor || {};
+        const unit = device.device_type === 'temperature_sensor' ? '°C' : '%';
 
-    onModeChange();
+        document.getElementById('edit-current-value').textContent =
+            (sensor.valid && typeof sensor.current_value === 'number') ? sensor.current_value.toFixed(1) : '--';
+        document.getElementById('edit-value-unit').textContent = unit;
+
+        document.getElementById('edit-lower-threshold').value = sensor.lower_threshold ?? 18.0;
+        document.getElementById('edit-lower-hysteresis').value = sensor.lower_hysteresis ?? 0.5;
+        document.getElementById('edit-upper-threshold').value = sensor.upper_threshold ?? 25.0;
+        document.getElementById('edit-upper-hysteresis').value = sensor.upper_hysteresis ?? 0.5;
+        document.getElementById('edit-timeout').value = sensor.timeout_seconds ?? 60;
+
+        document.getElementById('edit-report-min').value = sensor.report_min_interval ?? 0;
+        document.getElementById('edit-report-max').value = sensor.report_max_interval ?? 10;
+        document.getElementById('edit-report-change').value = sensor.report_change ?? 50;
+
+        // Set error action radio
+        const errorActionVal = sensor.error_action_on ? 'on' : 'off';
+        document.querySelectorAll('input[name="error-action"]').forEach(r => {
+            r.checked = (r.value === errorActionVal);
+        });
+
+        // Populate linked device dropdowns
+        renderLinkedDeviceSelect('edit-lower-linked', sensor.lower_linked_device || '');
+        renderLinkedDeviceSelect('edit-upper-linked', sensor.upper_linked_device || '');
+        renderLinkedDeviceSelect('edit-error-linked', sensor.error_linked_device || '');
+
+        updateErrorActionVisibility();
+        updateReportChangeDisplay();
+        updateThresholdLogicDisplay();
+    } else {
+        document.getElementById('edit-enabled').checked = device.enabled;
+        document.getElementById('edit-mode').value = device.mode;
+
+        document.getElementById('edit-delay-off1').value = (device.delay_off1_minutes !== undefined) ? device.delay_off1_minutes : 0;
+        document.getElementById('edit-delay-duration').value = (device.delay_duration_minutes !== undefined) ? device.delay_duration_minutes : 120;
+        document.getElementById('edit-delay-off2').value = (device.delay_off2_minutes !== undefined) ? device.delay_off2_minutes : 30;
+
+        renderTimePairs(device.time_pairs || [{ on: '06:00', off: '18:00' }]);
+        onModeChange();
+
+        // Show sensor control warning if applicable
+        const sensorControllers = getSensorControlInfo(ieeeAddr);
+        let warningDiv = document.getElementById('sensor-control-warning');
+        if (sensorControllers.length > 0) {
+            const names = sensorControllers.map(s => escapeHtml(s.custom_name)).join(', ');
+            if (!warningDiv) {
+                warningDiv = document.createElement('div');
+                warningDiv.id = 'sensor-control-warning';
+                warningDiv.className = 'sensor-control-warning';
+                document.getElementById('onoff-settings').prepend(warningDiv);
+            }
+            warningDiv.innerHTML = `&#9888; Ez az eszkoz szenzor altal vezerelt (${names}). Az idozites beallitasok nem ervenyesulnek, amig szenzor vezerles aktiv.`;
+            warningDiv.classList.remove('hidden');
+        } else if (warningDiv) {
+            warningDiv.classList.add('hidden');
+        }
+    }
+
     document.getElementById('device-modal').classList.remove('hidden');
-
-    // Update modal BLE status when opening
     updateBLEStatus(bleConnected, bleConnected ? 'Csatlakozva' : 'Nincs csatlakozva');
 }
 
 function closeModal() {
     document.getElementById('device-modal').classList.add('hidden');
     currentEditDevice = null;
+    modalDirty = false;
 }
 
 function onModeChange() {
@@ -857,6 +1121,14 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+
+// Mark modal dirty when user modifies any field
+document.getElementById('device-form').addEventListener('input', function() {
+    modalDirty = true;
+});
+document.getElementById('device-form').addEventListener('change', function() {
+    modalDirty = true;
+});
 
 // Close modal on escape key
 document.addEventListener('keydown', function(e) {

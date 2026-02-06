@@ -102,7 +102,63 @@ static void user_find_on_off_cb(esp_zb_zdp_status_t zdo_status, uint16_t peer_ad
 static void request_active_endpoints(uint16_t short_addr);
 static void active_ep_cb(esp_zb_zdp_status_t zdo_status, uint8_t ep_count, uint8_t *ep_list, void *user_ctx);
 static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc_1_1_t *simple_desc, void *user_ctx);
-static void configure_sensor_reporting(uint16_t short_addr, uint8_t endpoint, uint16_t cluster_id);
+static void configure_sensor_reporting(uint16_t short_addr, uint8_t endpoint, uint16_t cluster_id,
+                                       uint16_t min_interval, uint16_t max_interval, int16_t report_change_val);
+
+// IEEE address resolution for short addresses unknown after coordinator reboot
+#define MAX_IEEE_PENDING 8
+static uint16_t s_ieee_pending_shorts[MAX_IEEE_PENDING];
+static uint8_t s_ieee_pending_count = 0;
+
+static void ieee_addr_resolved_cb(esp_zb_zdp_status_t zdo_status, esp_zb_zdo_ieee_addr_rsp_t *resp, void *user_ctx)
+{
+    uint16_t short_addr = (uint16_t)(uintptr_t)user_ctx;
+
+    if (zdo_status == ESP_ZB_ZDP_STATUS_SUCCESS && resp) {
+        uint64_t ieee_addr = ieee_to_uint64(resp->ieee_addr);
+        char ieee_str[24];
+        format_ieee_addr_u64(ieee_str, sizeof(ieee_str), ieee_addr);
+        ESP_LOGI(TAG, "IEEE address resolved: short 0x%04x -> %s", short_addr, ieee_str);
+    } else {
+        ESP_LOGW(TAG, "IEEE address request failed for short 0x%04x, status=%d", short_addr, zdo_status);
+    }
+
+    // Remove from pending list
+    for (uint8_t i = 0; i < s_ieee_pending_count; i++) {
+        if (s_ieee_pending_shorts[i] == short_addr) {
+            s_ieee_pending_shorts[i] = s_ieee_pending_shorts[--s_ieee_pending_count];
+            break;
+        }
+    }
+}
+
+static void request_ieee_for_short(uint16_t short_addr)
+{
+    // Check if already pending
+    for (uint8_t i = 0; i < s_ieee_pending_count; i++) {
+        if (s_ieee_pending_shorts[i] == short_addr) return;
+    }
+
+    // Add to pending list
+    if (s_ieee_pending_count < MAX_IEEE_PENDING) {
+        s_ieee_pending_shorts[s_ieee_pending_count++] = short_addr;
+    } else {
+        return; // List full, skip
+    }
+
+    esp_zb_zdo_ieee_addr_req_param_t req = {
+        .dst_nwk_addr = short_addr,
+        .addr_of_interest = short_addr,
+        .request_type = 0,
+        .start_index = 0
+    };
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zdo_ieee_addr_req(&req, ieee_addr_resolved_cb, (void *)(uintptr_t)short_addr);
+    esp_zb_lock_release();
+
+    ESP_LOGI(TAG, "Requesting IEEE address for short 0x%04x", short_addr);
+}
 
 // Callback to clear pending discovery after timeout
 // param=0: simple_desc phase timeout (or stale alarm after match_desc already started)
@@ -319,10 +375,8 @@ static esp_err_t zb_attribute_reporting_handler(esp_zb_zcl_report_attr_message_t
 
     esp_zb_zcl_report_attr_message_t *report = message;
 
-    ESP_LOGI(TAG, "Attribute report received:");
-    ESP_LOGI(TAG, "  Source: 0x%04x", report->src_address.u.short_addr);
-    ESP_LOGI(TAG, "  Source endpoint: %d", report->src_endpoint);
-    ESP_LOGI(TAG, "  Cluster ID: 0x%04x", report->cluster);
+    ESP_LOGD(TAG, "Attribute report: src=0x%04x ep=%d cluster=0x%04x",
+             report->src_address.u.short_addr, report->src_endpoint, report->cluster);
 
     // Auto-detect ON/OFF device from attribute report — handles devices that
     // don't respond to simple_desc / match_desc (e.g. certain IKEA switches)
@@ -334,6 +388,12 @@ static esp_err_t zb_attribute_reporting_handler(esp_zb_zcl_report_attr_message_t
 
         uint64_t ieee_addr = ieee_to_uint64(ieee_bytes);
 
+        // If IEEE address lookup failed, request it from the device
+        if (ieee_addr == 0xFFFFFFFFFFFFFFFF || ieee_addr == 0) {
+            request_ieee_for_short(report->src_address.u.short_addr);
+            return ESP_OK;
+        }
+
         esp_err_t ret = device_manager_add(ieee_addr, report->src_endpoint, NULL, NULL);
         if (ret == ESP_OK) {
             char ieee_str[24];
@@ -342,6 +402,38 @@ static esp_err_t zb_attribute_reporting_handler(esp_zb_zcl_report_attr_message_t
                      ieee_str, report->src_endpoint);
         }
         // ret == ESP_ERR_INVALID_STATE → already known, silent skip
+        return ESP_OK;
+    }
+
+    // Handle Power Configuration cluster (battery reports) — cluster 0x0001
+    if (report->cluster == 0x0001) {
+        esp_zb_lock_acquire(portMAX_DELAY);
+        uint8_t batt_ieee_bytes[8];
+        esp_zb_ieee_address_by_short(report->src_address.u.short_addr, batt_ieee_bytes);
+        esp_zb_lock_release();
+        uint64_t batt_ieee_addr = ieee_to_uint64(batt_ieee_bytes);
+
+        // If IEEE address lookup failed, request it from the device
+        if (batt_ieee_addr == 0xFFFFFFFFFFFFFFFF || batt_ieee_addr == 0) {
+            request_ieee_for_short(report->src_address.u.short_addr);
+            return ESP_OK;
+        }
+
+        uint16_t batt_attr_id = report->attribute.id;
+        uint8_t batt_raw = *(uint8_t *)report->attribute.data.value;
+
+        if (batt_attr_id == 0x0021 && batt_raw != 0xFF) {
+            // BatteryPercentageRemaining: uint8, half-percent (200 = 100%)
+            uint8_t percent = batt_raw / 2;
+            ESP_LOGI(TAG, "Battery %d%% (raw %d) from 0x%04x", percent, batt_raw, report->src_address.u.short_addr);
+            device_manager_update_battery(batt_ieee_addr, percent, 0xFF);
+        } else if (batt_attr_id == 0x0020 && batt_raw != 0xFF) {
+            // BatteryVoltage: uint8, 100mV units
+            ESP_LOGI(TAG, "Battery %.2fV (raw %d) from 0x%04x", batt_raw * 0.1f, batt_raw, report->src_address.u.short_addr);
+            device_manager_update_battery(batt_ieee_addr, 0xFF, batt_raw);
+        } else {
+            ESP_LOGD(TAG, "Power config attr 0x%04x raw=%d, ignored", batt_attr_id, batt_raw);
+        }
         return ESP_OK;
     }
 
@@ -396,6 +488,14 @@ static esp_err_t zb_attribute_reporting_handler(esp_zb_zcl_report_attr_message_t
     esp_zb_lock_release();
 
     uint64_t ieee_addr = ieee_to_uint64(ieee_bytes);
+
+    // If IEEE address lookup failed, request it from the device via ZDO
+    if (ieee_addr == 0xFFFFFFFFFFFFFFFF || ieee_addr == 0) {
+        ESP_LOGW(TAG, "  IEEE address lookup failed for short 0x%04x - requesting via ZDO",
+                 report->src_address.u.short_addr);
+        request_ieee_for_short(report->src_address.u.short_addr);
+        return ESP_OK;
+    }
 
     char ieee_str[24];
     format_ieee_addr_u64(ieee_str, sizeof(ieee_str), ieee_addr);
@@ -1024,10 +1124,16 @@ static void active_ep_cb(esp_zb_zdp_status_t zdo_status, uint8_t ep_count, uint8
  * @param endpoint Endpoint ID
  * @param cluster_id Cluster ID (temperature or humidity)
  */
-static void configure_sensor_reporting(uint16_t short_addr, uint8_t endpoint, uint16_t cluster_id)
+static void configure_sensor_reporting(uint16_t short_addr, uint8_t endpoint, uint16_t cluster_id,
+                                       uint16_t min_interval, uint16_t max_interval, int16_t report_change_val)
 {
-    ESP_LOGI(TAG, "Configuring reporting for cluster 0x%04x on device 0x%04x endpoint %d",
-             cluster_id, short_addr, endpoint);
+    // Fallback defaults for 0 values (e.g. old NVS data before these fields existed)
+    if (max_interval == 0) max_interval = 10;
+    if (min_interval > max_interval) min_interval = 0;
+    int16_t report_change = (report_change_val != 0) ? report_change_val : 50;
+
+    ESP_LOGI(TAG, "Configuring reporting for cluster 0x%04x on 0x%04x ep=%d (min=%d max=%d chg=%d)",
+             cluster_id, short_addr, endpoint, min_interval, max_interval, report_change);
 
     esp_zb_zcl_config_report_cmd_t report_cmd = {0};
     report_cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
@@ -1036,15 +1142,13 @@ static void configure_sensor_reporting(uint16_t short_addr, uint8_t endpoint, ui
     report_cmd.zcl_basic_cmd.src_endpoint = HA_GATEWAY_ENDPOINT;
     report_cmd.clusterID = cluster_id;
 
-    // Configure reporting: min 5s, max 20s, change threshold
-    int16_t report_change = 50;  // Report on 0.5 degree/percent change
     esp_zb_zcl_config_report_record_t record = {
         .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV,
         .attributeID = 0x0000,  // Measured value attribute
         .attrType = (cluster_id == ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT) ?
                     ESP_ZB_ZCL_ATTR_TYPE_S16 : ESP_ZB_ZCL_ATTR_TYPE_U16,
-        .min_interval = 0,      // Minimum 0 seconds between reports
-        .max_interval = 10,     // Maximum 10 seconds between reports
+        .min_interval = min_interval,
+        .max_interval = max_interval,
         .reportable_change = &report_change,
     };
 
@@ -1082,12 +1186,89 @@ static void configure_sensor_reporting(uint16_t short_addr, uint8_t endpoint, ui
     }
 }
 
+/**
+ * @brief Configure battery reporting for Power Configuration cluster (0x0001).
+ *        Configures both BatteryPercentageRemaining (0x0021) and BatteryVoltage (0x0020).
+ *        Fixed intervals: max 10 min, 1% or 0.1V change triggers immediate report.
+ */
+static void configure_battery_reporting(uint16_t short_addr, uint8_t endpoint)
+{
+    ESP_LOGI(TAG, "Configuring battery reporting on 0x%04x ep=%d (max_interval=600s)", short_addr, endpoint);
+
+    // Configure BatteryPercentageRemaining (attr 0x0021, UINT8, half-percent units)
+    // reportable_change=2 means 1% (since 1 unit = 0.5%)
+    {
+        uint8_t change_val = 2;
+        esp_zb_zcl_config_report_record_t record = {
+            .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV,
+            .attributeID = 0x0021,
+            .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
+            .min_interval = 0,
+            .max_interval = 600,
+            .reportable_change = &change_val,
+        };
+
+        esp_zb_zcl_config_report_cmd_t report_cmd = {0};
+        report_cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+        report_cmd.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
+        report_cmd.zcl_basic_cmd.dst_endpoint = endpoint;
+        report_cmd.zcl_basic_cmd.src_endpoint = HA_GATEWAY_ENDPOINT;
+        report_cmd.clusterID = 0x0001;
+        report_cmd.record_number = 1;
+        report_cmd.record_field = &record;
+
+        for (int i = 0; i < 3; i++) {
+            esp_zb_lock_acquire(portMAX_DELAY);
+            esp_err_t ret = esp_zb_zcl_config_report_cmd_req(&report_cmd);
+            esp_zb_lock_release();
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "Battery percentage reporting configured (attempt %d)", i + 1);
+            }
+            if (i < 2) vTaskDelay(pdMS_TO_TICKS(500));
+        }
+    }
+
+    // Configure BatteryVoltage (attr 0x0020, UINT8, 100mV units)
+    // reportable_change=1 means 0.1V change
+    {
+        uint8_t change_val = 1;
+        esp_zb_zcl_config_report_record_t record = {
+            .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV,
+            .attributeID = 0x0020,
+            .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
+            .min_interval = 0,
+            .max_interval = 600,
+            .reportable_change = &change_val,
+        };
+
+        esp_zb_zcl_config_report_cmd_t report_cmd = {0};
+        report_cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+        report_cmd.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
+        report_cmd.zcl_basic_cmd.dst_endpoint = endpoint;
+        report_cmd.zcl_basic_cmd.src_endpoint = HA_GATEWAY_ENDPOINT;
+        report_cmd.clusterID = 0x0001;
+        report_cmd.record_number = 1;
+        report_cmd.record_field = &record;
+
+        for (int i = 0; i < 3; i++) {
+            esp_zb_lock_acquire(portMAX_DELAY);
+            esp_err_t ret = esp_zb_zcl_config_report_cmd_req(&report_cmd);
+            esp_zb_lock_release();
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "Battery voltage reporting configured (attempt %d)", i + 1);
+            }
+            if (i < 2) vTaskDelay(pdMS_TO_TICKS(500));
+        }
+    }
+}
+
 /* --------------- sensor bind (sensor → coordinator) --------------- */
 typedef struct {
     esp_zb_zdo_bind_req_param_t bind_req;   /* embedded — SDK tartja a pointerét a callback-ig */
     uint16_t                    short_addr;
     uint8_t                     endpoint;
     uint16_t                    cluster_id;
+    uint64_t                    ieee_addr;  /* sensor IEEE — for config lookup in callback */
 } sensor_bind_ctx_t;
 
 static void sensor_bind_cb(esp_zb_zdp_status_t status, void *user_ctx)
@@ -1102,8 +1283,22 @@ static void sensor_bind_cb(esp_zb_zdp_status_t status, void *user_ctx)
                  status, ctx->short_addr, ctx->endpoint, ctx->cluster_id);
     }
 
-    /* configure_sensor_reporting fut a bind eredménytől függetlenül */
-    configure_sensor_reporting(ctx->short_addr, ctx->endpoint, ctx->cluster_id);
+    /* Configure reporting regardless of bind result */
+    if (ctx->cluster_id == 0x0001) {
+        /* Battery cluster — fixed intervals, no user config needed */
+        configure_battery_reporting(ctx->short_addr, ctx->endpoint);
+    } else {
+        /* Temperature/humidity — use user-configurable intervals */
+        uint16_t min_iv = 0, max_iv = 10;
+        int16_t chg = 50;
+        device_config_t dev;
+        if (device_manager_get(ctx->ieee_addr, &dev) == ESP_OK) {
+            min_iv = dev.sensor.report_min_interval;
+            max_iv = dev.sensor.report_max_interval;
+            chg    = dev.sensor.report_change;
+        }
+        configure_sensor_reporting(ctx->short_addr, ctx->endpoint, ctx->cluster_id, min_iv, max_iv, chg);
+    }
     free(ctx);
 }
 
@@ -1117,12 +1312,13 @@ static void bind_sensor(uint16_t short_addr, uint8_t endpoint, uint16_t cluster_
     sensor_bind_ctx_t *ctx = calloc(1, sizeof(sensor_bind_ctx_t));
     if (!ctx) {
         ESP_LOGE(TAG, "OOM sensor_bind_ctx — fallback direct configure");
-        configure_sensor_reporting(short_addr, endpoint, cluster_id);
+        configure_sensor_reporting(short_addr, endpoint, cluster_id, 0, 10, 50);
         return;
     }
     ctx->short_addr = short_addr;
     ctx->endpoint   = endpoint;
     ctx->cluster_id = cluster_id;
+    ctx->ieee_addr  = s_pending_discovery.ieee_addr;
 
     /* sensor IEEE from pending discovery (already resolved) */
     uint8_t sensor_ieee[8];
@@ -1268,6 +1464,12 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
         }
     }
 
+    // Bind battery cluster (0x0001) for any sensor device — configure periodic battery reporting
+    if (has_temperature || has_humidity) {
+        ESP_LOGI(TAG, "Binding battery cluster (0x0001) for sensor %s ep=%d", ieee_str, endpoint);
+        bind_sensor(s_pending_discovery.short_addr, endpoint, 0x0001);
+    }
+
     // Add ON/OFF device
     if (has_on_off) {
         ESP_LOGI(TAG, "Adding ON/OFF device %s with endpoint %d", ieee_str, endpoint);
@@ -1364,7 +1566,10 @@ esp_err_t zigbee_reconfigure_all_sensors(void)
 
         ESP_LOGI(TAG, "Reconfiguring sensor %d: type=%d, endpoint=%d",
                  i, sensors[i].device_type, sensors[i].endpoint);
-        configure_sensor_reporting(short_addr, sensors[i].endpoint, cluster_id);
+        configure_sensor_reporting(short_addr, sensors[i].endpoint, cluster_id,
+                                   sensors[i].sensor.report_min_interval,
+                                   sensors[i].sensor.report_max_interval,
+                                   sensors[i].sensor.report_change);
     }
 
     return ESP_OK;

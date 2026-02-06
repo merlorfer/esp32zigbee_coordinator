@@ -99,12 +99,44 @@ static uint32_t get_minutes_since_cycle_start(void)
 }
 
 // ============================================================================
+// Sensor Actuator Check
+// ============================================================================
+
+/**
+ * @brief Check if an ON/OFF device is being used as an actuator by any sensor.
+ *        If so, its own time/delay automation should be skipped to avoid conflicts.
+ */
+static bool is_sensor_actuator(uint64_t ieee_addr)
+{
+    uint8_t count = device_manager_get_count();
+    for (uint8_t i = 0; i < count; i++) {
+        device_config_t dev;
+        if (device_manager_get_by_index(i, &dev) != ESP_OK) continue;
+
+        if (dev.device_type != DEVICE_TYPE_TEMPERATURE_SENSOR &&
+            dev.device_type != DEVICE_TYPE_HUMIDITY_SENSOR) continue;
+
+        if (dev.sensor.lower_linked_device == ieee_addr ||
+            dev.sensor.upper_linked_device == ieee_addr ||
+            dev.sensor.error_linked_device == ieee_addr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ============================================================================
 // Fixed Time Mode Processing
 // ============================================================================
 
 static void process_fixed_time_mode(device_config_t *dev, struct tm *current_time)
 {
     if (!dev->enabled) {
+        return;
+    }
+
+    // Skip if this device is controlled by a sensor — avoid conflicting commands
+    if (is_sensor_actuator(dev->ieee_addr)) {
         return;
     }
 
@@ -151,6 +183,12 @@ static void process_delay_mode(device_config_t *dev)
     if (!dev->enabled) {
         return;
     }
+
+    // Skip if this device is controlled by a sensor — avoid conflicting commands
+    if (is_sensor_actuator(dev->ieee_addr)) {
+        return;
+    }
+
     if (s_delay_cycle_start == 0) {
         return;
     }
@@ -328,7 +366,7 @@ static void process_sensor_thresholds(void)
                     // Update state in device manager
                     dev.sensor.lower_active = true;
                     dev.sensor.last_lower_action = now;
-                    device_manager_update(dev.ieee_addr, &dev);
+                    device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
                 } else if (dev.sensor.lower_active && value > (dev.sensor.lower_threshold + dev.sensor.lower_hysteresis)) {
                     // Turn OFF heating
                     ESP_LOGI(TAG, "Lower threshold + hysteresis cleared: %.2f > %.2f - Turning OFF linked device",
@@ -344,7 +382,7 @@ static void process_sensor_thresholds(void)
                     // Update state
                     dev.sensor.lower_active = false;
                     dev.sensor.last_lower_action = now;
-                    device_manager_update(dev.ieee_addr, &dev);
+                    device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
                 }
             }
         }
@@ -368,7 +406,7 @@ static void process_sensor_thresholds(void)
                     // Update state
                     dev.sensor.upper_active = true;
                     dev.sensor.last_upper_action = now;
-                    device_manager_update(dev.ieee_addr, &dev);
+                    device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
                 } else if (dev.sensor.upper_active && value < (dev.sensor.upper_threshold - dev.sensor.upper_hysteresis)) {
                     // Turn OFF cooling
                     ESP_LOGI(TAG, "Upper threshold - hysteresis cleared: %.2f < %.2f - Turning OFF linked device",
@@ -384,7 +422,7 @@ static void process_sensor_thresholds(void)
                     // Update state
                     dev.sensor.upper_active = false;
                     dev.sensor.last_upper_action = now;
-                    device_manager_update(dev.ieee_addr, &dev);
+                    device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
                 }
             }
         }
@@ -446,10 +484,22 @@ static void monitor_sensor_timeouts(void)
                     ESP_LOGI(TAG, "Turned OFF upper linked device due to timeout");
                 }
 
+                // Execute error action on error-linked device
+                if (dev.sensor.error_linked_device != 0) {
+                    cmd_queue_msg_t msg = {
+                        .ieee_addr = dev.sensor.error_linked_device,
+                        .endpoint = 1,
+                        .cmd = dev.sensor.error_action_on ? CMD_ON : CMD_OFF
+                    };
+                    xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+                    ESP_LOGI(TAG, "Timeout error action: %s error linked device",
+                             dev.sensor.error_action_on ? "Turned ON" : "Turned OFF");
+                }
+
                 // Set error and invalidate reading
                 device_manager_set_error(dev.ieee_addr, "Sensor timeout");
                 dev.reading.valid = false;
-                device_manager_update(dev.ieee_addr, &dev);
+                device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
             }
         }
     }
@@ -488,6 +538,10 @@ static void scheduler_task(void *pvParameters)
         }
 
         if (!s_scheduler_active) {
+            // Even when scheduler is paused (BLE mode), keep draining the sensor data queue
+            if (g_sensor_data_queue != NULL) {
+                process_sensor_data();
+            }
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }

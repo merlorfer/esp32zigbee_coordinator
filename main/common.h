@@ -133,7 +133,16 @@ typedef struct {
     float upper_hysteresis;
     uint64_t lower_linked_device;  // IEEE addr or 0
     uint64_t upper_linked_device;  // IEEE addr or 0
-    uint16_t timeout_seconds;      // Default: 30
+    uint16_t timeout_seconds;      // Default: 60
+
+    // Error handling (on sensor timeout)
+    uint64_t error_linked_device;  // Device to switch on error (0 = none)
+    bool error_action_on;          // true = ON on error, false = OFF on error
+
+    // Report configuration (persisted, used by configure_sensor_reporting)
+    uint16_t report_min_interval;  // Min interval in seconds (default 0)
+    uint16_t report_max_interval;  // Max interval in seconds (default 10)
+    int16_t report_change;         // Reportable change raw value (default 50 = 0.50 unit)
 
     // Runtime state (not persisted):
     bool lower_active;
@@ -150,6 +159,8 @@ typedef struct {
     float converted_value;
     uint32_t last_update;
     bool valid;
+    uint8_t battery_percent;       // 0-100, 0xFF = not available
+    uint8_t battery_voltage_100mv; // Voltage in 100mV units, 0xFF = not available
 } sensor_reading_t;
 
 /**

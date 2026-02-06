@@ -379,11 +379,27 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
             }
 
             cJSON_AddNumberToObject(sensor, "timeout_seconds", dev.sensor.timeout_seconds);
+
+            if (dev.sensor.error_linked_device != 0) {
+                char err_linked_addr[20];
+                format_ieee_addr_hex(err_linked_addr, sizeof(err_linked_addr), dev.sensor.error_linked_device);
+                cJSON_AddStringToObject(sensor, "error_linked_device", err_linked_addr);
+            } else {
+                cJSON_AddNullToObject(sensor, "error_linked_device");
+            }
+            cJSON_AddBoolToObject(sensor, "error_action_on", dev.sensor.error_action_on);
+
+            cJSON_AddNumberToObject(sensor, "report_min_interval", dev.sensor.report_min_interval);
+            cJSON_AddNumberToObject(sensor, "report_max_interval", dev.sensor.report_max_interval);
+            cJSON_AddNumberToObject(sensor, "report_change", dev.sensor.report_change);
+
             cJSON_AddNumberToObject(sensor, "current_value", dev.reading.converted_value);
             cJSON_AddNumberToObject(sensor, "last_update", dev.reading.last_update);
             cJSON_AddBoolToObject(sensor, "valid", dev.reading.valid);
             cJSON_AddBoolToObject(sensor, "lower_active", dev.sensor.lower_active);
             cJSON_AddBoolToObject(sensor, "upper_active", dev.sensor.upper_active);
+            cJSON_AddNumberToObject(sensor, "battery_percent", dev.reading.battery_percent);
+            cJSON_AddNumberToObject(sensor, "battery_voltage_100mv", dev.reading.battery_voltage_100mv);
 
             cJSON_AddItemToObject(device, "sensor", sensor);
         }
@@ -441,7 +457,7 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "Device config request for IEEE addr: %s", ieee_str);
 
     // Read request body
-    char buf[512];
+    char buf[1024];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
         httpd_resp_send_500(req);
@@ -449,16 +465,31 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
     }
     buf[ret] = '\0';
 
-    device_config_t dev;
-    if (device_manager_get(ieee_addr, &dev) != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Device not found");
-        return ESP_FAIL;
-    }
-
     cJSON *root = cJSON_Parse(buf);
     if (root == NULL) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
         return ESP_FAIL;
+    }
+
+    // Check for device_type to disambiguate multi-endpoint sensors
+    device_config_t dev;
+    bool found = false;
+    cJSON *dtype_obj = cJSON_GetObjectItem(root, "device_type");
+    if (cJSON_IsString(dtype_obj)) {
+        device_type_t dtype = DEVICE_TYPE_ON_OFF_LIGHT;
+        if (strcmp(dtype_obj->valuestring, "temperature_sensor") == 0) {
+            dtype = DEVICE_TYPE_TEMPERATURE_SENSOR;
+        } else if (strcmp(dtype_obj->valuestring, "humidity_sensor") == 0) {
+            dtype = DEVICE_TYPE_HUMIDITY_SENSOR;
+        }
+        found = (device_manager_get_by_type(ieee_addr, dtype, &dev) == ESP_OK);
+    }
+    if (!found) {
+        if (device_manager_get(ieee_addr, &dev) != ESP_OK) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Device not found");
+            return ESP_FAIL;
+        }
     }
 
     // Update fields if present
@@ -533,6 +564,60 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
         }
     }
 
+    // Sensor configuration sub-object
+    cJSON *sensor_obj = cJSON_GetObjectItem(root, "sensor");
+    if (cJSON_IsObject(sensor_obj) &&
+        (dev.device_type == DEVICE_TYPE_TEMPERATURE_SENSOR || dev.device_type == DEVICE_TYPE_HUMIDITY_SENSOR)) {
+
+        item = cJSON_GetObjectItem(sensor_obj, "lower_threshold");
+        if (cJSON_IsNumber(item)) dev.sensor.lower_threshold = (float)item->valuedouble;
+
+        item = cJSON_GetObjectItem(sensor_obj, "upper_threshold");
+        if (cJSON_IsNumber(item)) dev.sensor.upper_threshold = (float)item->valuedouble;
+
+        item = cJSON_GetObjectItem(sensor_obj, "lower_hysteresis");
+        if (cJSON_IsNumber(item)) dev.sensor.lower_hysteresis = (float)item->valuedouble;
+
+        item = cJSON_GetObjectItem(sensor_obj, "upper_hysteresis");
+        if (cJSON_IsNumber(item)) dev.sensor.upper_hysteresis = (float)item->valuedouble;
+
+        item = cJSON_GetObjectItem(sensor_obj, "lower_linked_device");
+        if (cJSON_IsString(item)) {
+            dev.sensor.lower_linked_device = strtoull(item->valuestring, NULL, 0);
+        } else if (cJSON_IsNull(item)) {
+            dev.sensor.lower_linked_device = 0;
+        }
+
+        item = cJSON_GetObjectItem(sensor_obj, "upper_linked_device");
+        if (cJSON_IsString(item)) {
+            dev.sensor.upper_linked_device = strtoull(item->valuestring, NULL, 0);
+        } else if (cJSON_IsNull(item)) {
+            dev.sensor.upper_linked_device = 0;
+        }
+
+        item = cJSON_GetObjectItem(sensor_obj, "error_linked_device");
+        if (cJSON_IsString(item)) {
+            dev.sensor.error_linked_device = strtoull(item->valuestring, NULL, 0);
+        } else if (cJSON_IsNull(item)) {
+            dev.sensor.error_linked_device = 0;
+        }
+
+        item = cJSON_GetObjectItem(sensor_obj, "error_action_on");
+        if (cJSON_IsBool(item)) dev.sensor.error_action_on = cJSON_IsTrue(item);
+
+        item = cJSON_GetObjectItem(sensor_obj, "timeout_seconds");
+        if (cJSON_IsNumber(item)) dev.sensor.timeout_seconds = (uint16_t)item->valueint;
+
+        item = cJSON_GetObjectItem(sensor_obj, "report_min_interval");
+        if (cJSON_IsNumber(item)) dev.sensor.report_min_interval = (uint16_t)item->valueint;
+
+        item = cJSON_GetObjectItem(sensor_obj, "report_max_interval");
+        if (cJSON_IsNumber(item)) dev.sensor.report_max_interval = (uint16_t)item->valueint;
+
+        item = cJSON_GetObjectItem(sensor_obj, "report_change");
+        if (cJSON_IsNumber(item)) dev.sensor.report_change = (int16_t)item->valueint;
+    }
+
     cJSON_Delete(root);
 
     ESP_LOGI(TAG, "Saving config: mode=%d, enabled=%d, delay_off1=%lu, delay_dur=%lu, delay_off2=%lu",
@@ -550,7 +635,7 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
         }
     }
 
-    device_manager_update(ieee_addr, &dev);
+    device_manager_update_by_type(ieee_addr, dev.device_type, &dev);
 
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "success", true);
