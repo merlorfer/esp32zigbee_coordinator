@@ -10,6 +10,18 @@
     <link rel="manifest" href="manifest.json">
 </head>
 <body>
+    <!-- Sticky BLE Status Bar -->
+    <div class="sticky-ble-bar">
+        <div class="ble-status">
+            <span id="sticky-ble-indicator" class="status-dot disconnected"></span>
+            <span id="sticky-ble-text">BLE: Nincs csatlakozva</span>
+        </div>
+        <div class="ble-actions">
+            <button onclick="connectBLE()" id="sticky-ble-connect-btn" class="btn btn-primary btn-small">BLE Csatlakozas</button>
+            <button onclick="disconnectBLE()" id="sticky-ble-disconnect-btn" class="btn btn-secondary btn-small hidden">Kapcsolat bontasa</button>
+        </div>
+    </div>
+
     <div class="container">
         <header>
             <h1>Zigbee Gateway</h1>
@@ -118,16 +130,6 @@
             <div class="modal-content">
                 <span class="close" onclick="closeModal()">&times;</span>
 
-                <!-- BLE Status Bar in Modal -->
-                <div class="modal-ble-status">
-                    <div class="ble-status-inline">
-                        <span id="modal-ble-indicator" class="status-dot disconnected"></span>
-                        <span id="modal-ble-text">BLE: Nincs csatlakozva</span>
-                    </div>
-                    <button onclick="connectBLE()" id="modal-ble-connect-btn" class="btn btn-small btn-primary">Csatlakozas</button>
-                    <button onclick="disconnectBLE()" id="modal-ble-disconnect-btn" class="btn btn-small btn-secondary hidden">Kapcsolat bontasa</button>
-                </div>
-
                 <h2>Eszkoz beallitasa</h2>
                 <form id="device-form">
                     <input type="hidden" id="edit-ieee-addr">
@@ -137,46 +139,129 @@
                         <input type="text" id="edit-name" maxlength="31">
                     </div>
 
-                    <div class="form-group">
-                        <label>
-                            <input type="checkbox" id="edit-enabled">
-                            Automatizacio engedelyezve
-                        </label>
-                    </div>
+                    <input type="hidden" id="edit-device-type">
 
-                    <div class="form-group">
-                        <label for="edit-mode">Mukodesi mod:</label>
-                        <select id="edit-mode" onchange="onModeChange()">
-                            <option value="fixed_time">Fix idopont</option>
-                            <option value="delay">Delay (Kesleltetes)</option>
-                        </select>
-                    </div>
-
-                    <!-- Fixed Time Mode Settings -->
-                    <div id="fixed-time-settings">
-                        <div id="time-pairs-container"></div>
-                        <button type="button" onclick="addTimePair()" class="btn btn-secondary btn-small">
-                            + Uj idopont hozzaadasa
-                        </button>
-                    </div>
-
-                    <!-- Delay Mode Settings -->
-                    <div id="delay-settings" class="hidden">
-                        <p class="hint">3-fazisu ciklus: OFF1 → ON → OFF2 → ismetles</p>
+                    <!-- ON/OFF device settings -->
+                    <div id="onoff-settings">
                         <div class="form-group">
-                            <label for="edit-delay-off1">OFF1 idotartam (perc):</label>
-                            <input type="number" id="edit-delay-off1" min="0" max="1440" value="0">
-                            <small class="hint">Kesleltetes az ON elott (lehet 0)</small>
+                            <label>
+                                <input type="checkbox" id="edit-enabled">
+                                Automatizacio engedelyezve
+                            </label>
                         </div>
+
                         <div class="form-group">
-                            <label for="edit-delay-duration">ON idotartam (perc):</label>
-                            <input type="number" id="edit-delay-duration" min="1" max="1440" value="120">
-                            <small class="hint">Meddig legyen bekapcsolva</small>
+                            <label for="edit-mode">Mukodesi mod:</label>
+                            <select id="edit-mode" onchange="onModeChange()">
+                                <option value="fixed_time">Fix idopont</option>
+                                <option value="delay">Delay (Kesleltetes)</option>
+                            </select>
                         </div>
-                        <div class="form-group">
-                            <label for="edit-delay-off2">OFF2 idotartam (perc):</label>
-                            <input type="number" id="edit-delay-off2" min="0" max="1440" value="30">
-                            <small class="hint">Kesleltetes az ON utan (lehet 0)</small>
+
+                        <!-- Fixed Time Mode Settings -->
+                        <div id="fixed-time-settings">
+                            <div id="time-pairs-container"></div>
+                            <button type="button" onclick="addTimePair()" class="btn btn-secondary btn-small">
+                                + Uj idopont hozzaadasa
+                            </button>
+                        </div>
+
+                        <!-- Delay Mode Settings -->
+                        <div id="delay-settings" class="hidden">
+                            <p class="hint">3-fazisu ciklus: OFF1 → ON → OFF2 → ismetles</p>
+                            <div class="form-group">
+                                <label for="edit-delay-off1">OFF1 idotartam (perc):</label>
+                                <input type="number" id="edit-delay-off1" min="0" max="1440" value="0">
+                                <small class="hint">Kesleltetes az ON elott (lehet 0)</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-delay-duration">ON idotartam (perc):</label>
+                                <input type="number" id="edit-delay-duration" min="1" max="1440" value="120">
+                                <small class="hint">Meddig legyen bekapcsolva</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-delay-off2">OFF2 idotartam (perc):</label>
+                                <input type="number" id="edit-delay-off2" min="0" max="1440" value="30">
+                                <small class="hint">Kesleltetes az ON utan (lehet 0)</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Sensor device settings -->
+                    <div id="sensor-settings" class="hidden">
+                        <div class="sensor-current-value">
+                            <span class="sensor-value-number" id="edit-current-value">--</span>
+                            <span class="sensor-value-unit" id="edit-value-unit">°C</span>
+                        </div>
+
+                        <div class="threshold-group">
+                            <h3>Also korlat (futes)</h3>
+                            <div class="threshold-logic" id="lower-threshold-logic"></div>
+                            <div class="form-group">
+                                <label for="edit-lower-threshold">Hatarertek:</label>
+                                <input type="number" id="edit-lower-threshold" step="0.1" value="18.0" oninput="updateThresholdLogicDisplay()">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-lower-hysteresis">Hiszterezis:</label>
+                                <input type="number" id="edit-lower-hysteresis" step="0.1" min="0" value="0.5" oninput="updateThresholdLogicDisplay()">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-lower-linked">Kapcsolt eszkoz:</label>
+                                <select id="edit-lower-linked"></select>
+                            </div>
+                        </div>
+
+                        <div class="threshold-group">
+                            <h3>Felso korlat (hutes)</h3>
+                            <div class="threshold-logic" id="upper-threshold-logic"></div>
+                            <div class="form-group">
+                                <label for="edit-upper-threshold">Hatarertek:</label>
+                                <input type="number" id="edit-upper-threshold" step="0.1" value="25.0" oninput="updateThresholdLogicDisplay()">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-upper-hysteresis">Hiszterezis:</label>
+                                <input type="number" id="edit-upper-hysteresis" step="0.1" min="0" value="0.5" oninput="updateThresholdLogicDisplay()">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-upper-linked">Kapcsolt eszkoz:</label>
+                                <select id="edit-upper-linked"></select>
+                            </div>
+                        </div>
+
+                        <div class="threshold-group">
+                            <h3>Hibakezelés</h3>
+                            <div class="form-group">
+                                <label for="edit-timeout">Timeout (mp):</label>
+                                <input type="number" id="edit-timeout" min="10" max="3600" value="60">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-error-linked">Hiba-eszköz:</label>
+                                <select id="edit-error-linked" onchange="updateErrorActionVisibility()"></select>
+                            </div>
+                            <div class="form-group hidden" id="error-action-group">
+                                <label>Hibakkor:</label>
+                                <div class="inline-radio">
+                                    <label><input type="radio" name="error-action" value="on"> BE</label>
+                                    <label><input type="radio" name="error-action" value="off" checked> KI</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="threshold-group">
+                            <h3>Jelentési beallitasok</h3>
+                            <div class="form-group">
+                                <label for="edit-report-min">Min. időköz (mp):</label>
+                                <input type="number" id="edit-report-min" min="0" max="65535" value="0">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-report-max">Max. időköz (mp):</label>
+                                <input type="number" id="edit-report-max" min="1" max="65535" value="10">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-report-change">Jelentendő változás:</label>
+                                <input type="number" id="edit-report-change" min="1" max="32767" value="50" oninput="updateReportChangeDisplay()">
+                                <small class="hint">= <span id="report-change-display">0.50</span> <span id="report-change-unit">egység</span></small>
+                            </div>
                         </div>
                     </div>
 
