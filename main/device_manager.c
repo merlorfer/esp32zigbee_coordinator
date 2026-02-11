@@ -4,6 +4,7 @@
  */
 
 #include "device_manager.h"
+#include "sensor_types.h"
 #include "nvs_manager.h"
 #include "nvs.h"
 #include "esp_log.h"
@@ -452,11 +453,12 @@ esp_err_t device_manager_add_sensor(uint64_t ieee_addr, uint8_t endpoint,
     dev->device_type = device_type;
     dev->enabled = true;  // Sensors always enabled by default
 
-    // Set default sensor configuration
-    dev->sensor.lower_threshold = 18.0f;
-    dev->sensor.upper_threshold = 25.0f;
-    dev->sensor.lower_hysteresis = 0.5f;
-    dev->sensor.upper_hysteresis = 0.5f;
+    // Set default sensor configuration from type registry
+    const sensor_type_info_t *defaults = sensor_type_get_info(device_type);
+    dev->sensor.lower_threshold = defaults ? defaults->default_lower_threshold : 18.0f;
+    dev->sensor.upper_threshold = defaults ? defaults->default_upper_threshold : 25.0f;
+    dev->sensor.lower_hysteresis = defaults ? defaults->default_hysteresis : 0.5f;
+    dev->sensor.upper_hysteresis = defaults ? defaults->default_hysteresis : 0.5f;
     dev->sensor.lower_linked_device = 0;  // Unassigned
     dev->sensor.upper_linked_device = 0;  // Unassigned
     dev->sensor.timeout_seconds = 60;  // Increased from 30 to 60 seconds
@@ -470,11 +472,19 @@ esp_err_t device_manager_add_sensor(uint64_t ieee_addr, uint8_t endpoint,
     dev->sensor.report_max_interval = 10;  // Max 10 seconds
     dev->sensor.report_change = 50;        // 0.50 unit change
 
+    // Delay defaults (0 = immediate, backward compatible)
+    dev->sensor.lower_delay_seconds = 0;
+    dev->sensor.upper_delay_seconds = 0;
+
     // Runtime state
     dev->sensor.lower_active = false;
     dev->sensor.upper_active = false;
     dev->sensor.last_lower_action = 0;
     dev->sensor.last_upper_action = 0;
+    dev->sensor.lower_delay_pending = false;
+    dev->sensor.upper_delay_pending = false;
+    dev->sensor.lower_delay_start = 0;
+    dev->sensor.upper_delay_start = 0;
 
     // Reading (runtime only)
     dev->reading.raw_value = 0;
@@ -491,7 +501,8 @@ esp_err_t device_manager_add_sensor(uint64_t ieee_addr, uint8_t endpoint,
         strncpy(dev->model, model, MAX_MODEL_LEN - 1);
     }
 
-    const char *type_str = (device_type == DEVICE_TYPE_TEMPERATURE_SENSOR) ? "Temperature" : "Humidity";
+    const sensor_type_info_t *type_info = sensor_type_get_info(device_type);
+    const char *type_str = type_info ? type_info->display_name : "Unknown";
     snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "%s Sensor %d", type_str, s_device_count + 1);
 
     s_device_count++;
@@ -527,8 +538,7 @@ esp_err_t device_manager_update_sensor_reading(uint64_t ieee_addr, uint8_t endpo
     for (uint8_t i = 0; i < s_device_count; i++) {
         if (s_devices[i].ieee_addr == ieee_addr &&
             s_devices[i].endpoint == endpoint &&
-            (s_devices[i].device_type == DEVICE_TYPE_TEMPERATURE_SENSOR ||
-             s_devices[i].device_type == DEVICE_TYPE_HUMIDITY_SENSOR)) {
+            is_sensor_device(s_devices[i].device_type)) {
 
             // Update last_update for ALL matching sensors
             s_devices[i].reading.last_update = now;
@@ -581,8 +591,7 @@ esp_err_t device_manager_get_sensors(device_config_t *sensors, uint8_t *count)
 
     *count = 0;
     for (uint8_t i = 0; i < s_device_count; i++) {
-        if (s_devices[i].device_type == DEVICE_TYPE_TEMPERATURE_SENSOR ||
-            s_devices[i].device_type == DEVICE_TYPE_HUMIDITY_SENSOR) {
+        if (is_sensor_device(s_devices[i].device_type)) {
             memcpy(&sensors[*count], &s_devices[i], sizeof(device_config_t));
             (*count)++;
         }
@@ -601,8 +610,7 @@ esp_err_t device_manager_update_battery(uint64_t ieee_addr, uint8_t battery_perc
 
     for (uint8_t i = 0; i < s_device_count; i++) {
         if (s_devices[i].ieee_addr == ieee_addr &&
-            (s_devices[i].device_type == DEVICE_TYPE_TEMPERATURE_SENSOR ||
-             s_devices[i].device_type == DEVICE_TYPE_HUMIDITY_SENSOR)) {
+            is_sensor_device(s_devices[i].device_type)) {
             if (battery_percent != 0xFF) {
                 s_devices[i].reading.battery_percent = battery_percent;
             }

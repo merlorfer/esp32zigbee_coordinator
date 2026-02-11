@@ -118,6 +118,10 @@ esp_err_t nvs_save_device(uint8_t index, const device_config_t *device)
     device_copy.sensor.upper_active = false;
     device_copy.sensor.last_lower_action = 0;
     device_copy.sensor.last_upper_action = 0;
+    device_copy.sensor.lower_delay_pending = false;
+    device_copy.sensor.upper_delay_pending = false;
+    device_copy.sensor.lower_delay_start = 0;
+    device_copy.sensor.upper_delay_start = 0;
 
     char key[16];
     snprintf(key, sizeof(key), "%s%d", NVS_KEY_DEVICE_PREFIX, index);
@@ -170,6 +174,10 @@ esp_err_t nvs_load_device(uint8_t index, device_config_t *device)
         device->sensor.upper_active = false;
         device->sensor.last_lower_action = 0;
         device->sensor.last_upper_action = 0;
+        device->sensor.lower_delay_pending = false;
+        device->sensor.upper_delay_pending = false;
+        device->sensor.lower_delay_start = 0;
+        device->sensor.upper_delay_start = 0;
 
         // Handle migration for devices saved before sensor support was added
         // If device_type was not set (old version), default to ON_OFF_LIGHT

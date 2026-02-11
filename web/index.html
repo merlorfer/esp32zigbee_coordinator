@@ -206,6 +206,11 @@
                                 <input type="number" id="edit-lower-hysteresis" step="0.1" min="0" value="0.5" oninput="updateThresholdLogicDisplay()">
                             </div>
                             <div class="form-group">
+                                <label for="edit-lower-delay">Kesleltetes (mp):</label>
+                                <input type="number" id="edit-lower-delay" min="0" max="3600" step="1" value="0" oninput="updateThresholdLogicDisplay()">
+                                <small class="hint">0 = azonnali bekapcsolas</small>
+                            </div>
+                            <div class="form-group">
                                 <label for="edit-lower-linked">Kapcsolt eszkoz:</label>
                                 <select id="edit-lower-linked"></select>
                             </div>
@@ -221,6 +226,11 @@
                             <div class="form-group">
                                 <label for="edit-upper-hysteresis">Hiszterezis:</label>
                                 <input type="number" id="edit-upper-hysteresis" step="0.1" min="0" value="0.5" oninput="updateThresholdLogicDisplay()">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-upper-delay">Kesleltetes (mp):</label>
+                                <input type="number" id="edit-upper-delay" min="0" max="3600" step="1" value="0" oninput="updateThresholdLogicDisplay()">
+                                <small class="hint">0 = azonnali bekapcsolas</small>
                             </div>
                             <div class="form-group">
                                 <label for="edit-upper-linked">Kapcsolt eszkoz:</label>
