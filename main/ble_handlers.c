@@ -8,6 +8,7 @@
 #include "ble_handlers.h"
 #include "ble_task.h"
 #include "device_manager.h"
+#include "sensor_types.h"
 #include "zigbee_task.h"
 #include "led_task.h"
 #include "common.h"
@@ -90,13 +91,7 @@ static char *handle_get_devices(cJSON *params)
         cJSON_AddBoolToObject(device, "enabled", dev.enabled);
 
         // Add device type
-        const char *device_type_str = "on_off_light";
-        if (dev.device_type == DEVICE_TYPE_TEMPERATURE_SENSOR) {
-            device_type_str = "temperature_sensor";
-        } else if (dev.device_type == DEVICE_TYPE_HUMIDITY_SENSOR) {
-            device_type_str = "humidity_sensor";
-        }
-        cJSON_AddStringToObject(device, "device_type", device_type_str);
+        cJSON_AddStringToObject(device, "device_type", sensor_type_to_string(dev.device_type));
 
         // For ON_OFF_LIGHT devices, add automation mode and schedule
         if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT) {
@@ -126,8 +121,7 @@ static char *handle_get_devices(cJSON *params)
         }
 
         // For sensor devices, add sensor configuration and reading
-        if (dev.device_type == DEVICE_TYPE_TEMPERATURE_SENSOR ||
-            dev.device_type == DEVICE_TYPE_HUMIDITY_SENSOR) {
+        if (is_sensor_device(dev.device_type)) {
             cJSON *sensor = cJSON_CreateObject();
             cJSON_AddNumberToObject(sensor, "lower_threshold", dev.sensor.lower_threshold);
             cJSON_AddNumberToObject(sensor, "upper_threshold", dev.sensor.upper_threshold);
@@ -165,11 +159,16 @@ static char *handle_get_devices(cJSON *params)
             cJSON_AddNumberToObject(sensor, "report_max_interval", dev.sensor.report_max_interval);
             cJSON_AddNumberToObject(sensor, "report_change", dev.sensor.report_change);
 
+            cJSON_AddNumberToObject(sensor, "lower_delay_seconds", dev.sensor.lower_delay_seconds);
+            cJSON_AddNumberToObject(sensor, "upper_delay_seconds", dev.sensor.upper_delay_seconds);
+
             cJSON_AddNumberToObject(sensor, "current_value", dev.reading.converted_value);
             cJSON_AddNumberToObject(sensor, "last_update", dev.reading.last_update);
             cJSON_AddBoolToObject(sensor, "valid", dev.reading.valid);
             cJSON_AddBoolToObject(sensor, "lower_active", dev.sensor.lower_active);
             cJSON_AddBoolToObject(sensor, "upper_active", dev.sensor.upper_active);
+            cJSON_AddBoolToObject(sensor, "lower_delay_pending", dev.sensor.lower_delay_pending);
+            cJSON_AddBoolToObject(sensor, "upper_delay_pending", dev.sensor.upper_delay_pending);
             cJSON_AddNumberToObject(sensor, "battery_percent", dev.reading.battery_percent);
             cJSON_AddNumberToObject(sensor, "battery_voltage_100mv", dev.reading.battery_voltage_100mv);
 
@@ -279,12 +278,7 @@ static char *handle_set_device_config(cJSON *params)
     cJSON *dtype_obj = cJSON_GetObjectItem(params, "device_type");
     bool found = false;
     if (cJSON_IsString(dtype_obj)) {
-        device_type_t dtype = DEVICE_TYPE_ON_OFF_LIGHT;
-        if (strcmp(dtype_obj->valuestring, "temperature_sensor") == 0) {
-            dtype = DEVICE_TYPE_TEMPERATURE_SENSOR;
-        } else if (strcmp(dtype_obj->valuestring, "humidity_sensor") == 0) {
-            dtype = DEVICE_TYPE_HUMIDITY_SENSOR;
-        }
+        device_type_t dtype = sensor_type_from_string(dtype_obj->valuestring);
         found = (device_manager_get_by_type(ieee_addr, dtype, &dev) == ESP_OK);
     }
     if (!found) {
@@ -368,8 +362,7 @@ static char *handle_set_device_config(cJSON *params)
 
     // Sensor configuration sub-object
     cJSON *sensor_obj = cJSON_GetObjectItem(params, "sensor");
-    if (cJSON_IsObject(sensor_obj) &&
-        (dev.device_type == DEVICE_TYPE_TEMPERATURE_SENSOR || dev.device_type == DEVICE_TYPE_HUMIDITY_SENSOR)) {
+    if (cJSON_IsObject(sensor_obj) && is_sensor_device(dev.device_type)) {
 
         item = cJSON_GetObjectItem(sensor_obj, "lower_threshold");
         if (cJSON_IsNumber(item)) dev.sensor.lower_threshold = (float)item->valuedouble;
@@ -418,9 +411,20 @@ static char *handle_set_device_config(cJSON *params)
 
         item = cJSON_GetObjectItem(sensor_obj, "report_change");
         if (cJSON_IsNumber(item)) dev.sensor.report_change = (int16_t)item->valueint;
+
+        item = cJSON_GetObjectItem(sensor_obj, "lower_delay_seconds");
+        if (cJSON_IsNumber(item)) dev.sensor.lower_delay_seconds = (uint16_t)item->valueint;
+
+        item = cJSON_GetObjectItem(sensor_obj, "upper_delay_seconds");
+        if (cJSON_IsNumber(item)) dev.sensor.upper_delay_seconds = (uint16_t)item->valueint;
     }
 
     device_manager_update_by_type(ieee_addr, dev.device_type, &dev);
+
+    // Send configure reporting to Zigbee device if sensor config was changed
+    if (cJSON_IsObject(sensor_obj) && is_sensor_device(dev.device_type)) {
+        zigbee_reconfigure_sensor(ieee_addr, dev.device_type);
+    }
 
     cJSON *response = cJSON_CreateObject();
     cJSON_AddStringToObject(response, "status", "ok");
@@ -653,8 +657,7 @@ static char *handle_configure_sensor_thresholds(cJSON *params)
     }
 
     // Verify it's a sensor device
-    if (dev.device_type != DEVICE_TYPE_TEMPERATURE_SENSOR &&
-        dev.device_type != DEVICE_TYPE_HUMIDITY_SENSOR) {
+    if (!is_sensor_device(dev.device_type)) {
         cJSON *error = cJSON_CreateObject();
         cJSON_AddStringToObject(error, "status", "error");
         cJSON_AddStringToObject(error, "message", "Not a sensor device");
@@ -732,8 +735,7 @@ static char *handle_link_sensor_devices(cJSON *params)
     }
 
     // Verify it's a sensor device
-    if (dev.device_type != DEVICE_TYPE_TEMPERATURE_SENSOR &&
-        dev.device_type != DEVICE_TYPE_HUMIDITY_SENSOR) {
+    if (!is_sensor_device(dev.device_type)) {
         cJSON *error = cJSON_CreateObject();
         cJSON_AddStringToObject(error, "status", "error");
         cJSON_AddStringToObject(error, "message", "Not a sensor device");

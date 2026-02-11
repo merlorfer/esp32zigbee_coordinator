@@ -144,11 +144,20 @@ typedef struct {
     uint16_t report_max_interval;  // Max interval in seconds (default 10)
     int16_t report_change;         // Reportable change raw value (default 50 = 0.50 unit)
 
+    // Delay settings (persisted):
+    uint16_t lower_delay_seconds;  // Delay before ON for lower threshold (default: 0 = immediate)
+    uint16_t upper_delay_seconds;  // Delay before ON for upper threshold (default: 0 = immediate)
+
     // Runtime state (not persisted):
     bool lower_active;
     bool upper_active;
     uint32_t last_lower_action;
     uint32_t last_upper_action;
+    // Delay runtime state:
+    bool lower_delay_pending;      // Delay timer running
+    bool upper_delay_pending;
+    uint32_t lower_delay_start;    // When delay timer started
+    uint32_t upper_delay_start;
 } sensor_config_t;
 
 /**

@@ -5,6 +5,7 @@
 
 #include "zigbee_task.h"
 #include "device_manager.h"
+#include "sensor_types.h"
 #include "led_task.h"
 #include "esp_log.h"
 #include "esp_check.h"
@@ -437,9 +438,8 @@ static esp_err_t zb_attribute_reporting_handler(esp_zb_zcl_report_attr_message_t
         return ESP_OK;
     }
 
-    // Check if this is a temperature or humidity measurement
-    if (report->cluster != ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT &&
-        report->cluster != ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT) {
+    // Check if this is a known sensor measurement cluster
+    if (sensor_type_get_by_cluster(report->cluster) == NULL) {
         ESP_LOGD(TAG, "Not a sensor cluster, ignoring");
         return ESP_OK;
     }
@@ -1142,11 +1142,11 @@ static void configure_sensor_reporting(uint16_t short_addr, uint8_t endpoint, ui
     report_cmd.zcl_basic_cmd.src_endpoint = HA_GATEWAY_ENDPOINT;
     report_cmd.clusterID = cluster_id;
 
+    const sensor_type_info_t *sinfo = sensor_type_get_by_cluster(cluster_id);
     esp_zb_zcl_config_report_record_t record = {
         .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV,
         .attributeID = 0x0000,  // Measured value attribute
-        .attrType = (cluster_id == ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT) ?
-                    ESP_ZB_ZCL_ATTR_TYPE_S16 : ESP_ZB_ZCL_ATTR_TYPE_U16,
+        .attrType = sinfo ? sinfo->zcl_attr_type : ESP_ZB_ZCL_ATTR_TYPE_S16,
         .min_interval = min_interval,
         .max_interval = max_interval,
         .reportable_change = &report_change,
@@ -1399,10 +1399,9 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
         return;
     }
 
-    // Check input clusters (server side) for ON_OFF, Temperature, and Humidity clusters
+    // Check input clusters (server side) for ON_OFF and sensor clusters
     bool has_on_off = false;
-    bool has_temperature = false;
-    bool has_humidity = false;
+    bool has_any_sensor = false;
 
     for (int i = 0; i < simple_desc->app_input_cluster_count; i++) {
         uint16_t cluster_id = simple_desc->app_cluster_list[i];
@@ -1411,12 +1410,13 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
         if (cluster_id == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             has_on_off = true;
             ESP_LOGI(TAG, "  Found ON_OFF cluster on endpoint %d!", endpoint);
-        } else if (cluster_id == ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT) {
-            has_temperature = true;
-            ESP_LOGI(TAG, "  Found TEMPERATURE_MEASUREMENT cluster on endpoint %d!", endpoint);
-        } else if (cluster_id == ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT) {
-            has_humidity = true;
-            ESP_LOGI(TAG, "  Found HUMIDITY_MEASUREMENT cluster on endpoint %d!", endpoint);
+        } else {
+            const sensor_type_info_t *sinfo = sensor_type_get_by_cluster(cluster_id);
+            if (sinfo != NULL) {
+                has_any_sensor = true;
+                ESP_LOGI(TAG, "  Found %s cluster (0x%04x) on endpoint %d!",
+                         sinfo->display_name, cluster_id, endpoint);
+            }
         }
     }
 
@@ -1426,46 +1426,29 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
     char ieee_str[24];
     format_ieee_addr(ieee_str, sizeof(ieee_str), ieee_bytes);
 
-    // Add temperature sensor
-    if (has_temperature) {
-        ESP_LOGI(TAG, "Adding TEMPERATURE sensor %s with endpoint %d", ieee_str, endpoint);
+    // Add sensor devices found in input clusters
+    for (int i = 0; i < simple_desc->app_input_cluster_count; i++) {
+        uint16_t cluster_id = simple_desc->app_cluster_list[i];
+        const sensor_type_info_t *sinfo = sensor_type_get_by_cluster(cluster_id);
+        if (sinfo == NULL) continue;
+
+        ESP_LOGI(TAG, "Adding %s sensor %s with endpoint %d", sinfo->display_name, ieee_str, endpoint);
         esp_err_t ret = device_manager_add_sensor(s_pending_discovery.ieee_addr, endpoint,
-                                                   DEVICE_TYPE_TEMPERATURE_SENSOR, NULL, NULL);
+                                                   sinfo->device_type, NULL, NULL);
         if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "Temperature sensor added successfully");
+            ESP_LOGI(TAG, "%s sensor added successfully", sinfo->display_name);
             device_added = true;
-            // Bind sensor → coordinator, then configure reporting in callback
-            bind_sensor(s_pending_discovery.short_addr, endpoint,
-                        ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT);
+            bind_sensor(s_pending_discovery.short_addr, endpoint, sinfo->cluster_id);
         } else if (ret == ESP_ERR_INVALID_STATE) {
-            ESP_LOGI(TAG, "Temperature sensor already exists");
-            device_added = true;  // Consider it added
+            ESP_LOGI(TAG, "%s sensor already exists", sinfo->display_name);
+            device_added = true;
         } else {
-            ESP_LOGE(TAG, "Failed to add temperature sensor: %s", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "Failed to add %s sensor: %s", sinfo->display_name, esp_err_to_name(ret));
         }
     }
 
-    // Add humidity sensor (separate device entry, same IEEE, different endpoint or cluster)
-    if (has_humidity) {
-        ESP_LOGI(TAG, "Adding HUMIDITY sensor %s with endpoint %d", ieee_str, endpoint);
-        esp_err_t ret = device_manager_add_sensor(s_pending_discovery.ieee_addr, endpoint,
-                                                   DEVICE_TYPE_HUMIDITY_SENSOR, NULL, NULL);
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "Humidity sensor added successfully");
-            device_added = true;
-            // Bind sensor → coordinator, then configure reporting in callback
-            bind_sensor(s_pending_discovery.short_addr, endpoint,
-                        ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT);
-        } else if (ret == ESP_ERR_INVALID_STATE) {
-            ESP_LOGI(TAG, "Humidity sensor already exists");
-            device_added = true;  // Consider it added
-        } else {
-            ESP_LOGE(TAG, "Failed to add humidity sensor: %s", esp_err_to_name(ret));
-        }
-    }
-
-    // Bind battery cluster (0x0001) for any sensor device — configure periodic battery reporting
-    if (has_temperature || has_humidity) {
+    // Bind battery cluster (0x0001) for any sensor device
+    if (has_any_sensor) {
         ESP_LOGI(TAG, "Binding battery cluster (0x0001) for sensor %s ep=%d", ieee_str, endpoint);
         bind_sensor(s_pending_discovery.short_addr, endpoint, 0x0001);
     }
@@ -1555,23 +1538,57 @@ esp_err_t zigbee_reconfigure_all_sensors(void)
             continue;
         }
 
-        uint16_t cluster_id;
-        if (sensors[i].device_type == DEVICE_TYPE_TEMPERATURE_SENSOR) {
-            cluster_id = ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT;
-        } else if (sensors[i].device_type == DEVICE_TYPE_HUMIDITY_SENSOR) {
-            cluster_id = ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT;
-        } else {
+        const sensor_type_info_t *stype = sensor_type_get_info(sensors[i].device_type);
+        if (stype == NULL) {
             continue;  // Not a sensor
         }
 
         ESP_LOGI(TAG, "Reconfiguring sensor %d: type=%d, endpoint=%d",
                  i, sensors[i].device_type, sensors[i].endpoint);
-        configure_sensor_reporting(short_addr, sensors[i].endpoint, cluster_id,
+        configure_sensor_reporting(short_addr, sensors[i].endpoint, stype->cluster_id,
                                    sensors[i].sensor.report_min_interval,
                                    sensors[i].sensor.report_max_interval,
                                    sensors[i].sensor.report_change);
     }
 
+    return ESP_OK;
+}
+
+// Public function to reconfigure reporting for a single sensor (called after config save)
+esp_err_t zigbee_reconfigure_sensor(uint64_t ieee_addr, device_type_t device_type)
+{
+    if (!s_zigbee_running) {
+        ESP_LOGW(TAG, "Zigbee not running, cannot reconfigure sensor");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    device_config_t dev;
+    if (device_manager_get_by_type(ieee_addr, device_type, &dev) != ESP_OK) {
+        ESP_LOGW(TAG, "Sensor not found for reconfigure");
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    esp_zb_ieee_addr_t ieee;
+    for (int j = 0; j < 8; j++) {
+        ieee[j] = (ieee_addr >> (j * 8)) & 0xFF;
+    }
+
+    uint16_t short_addr = esp_zb_address_short_by_ieee(ieee);
+    if (short_addr == 0xFFFF) {
+        ESP_LOGW(TAG, "Short address not found for sensor reconfigure");
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    const sensor_type_info_t *stype = sensor_type_get_info(device_type);
+    if (stype == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "Reconfiguring single sensor: type=%d, ep=%d", device_type, dev.endpoint);
+    configure_sensor_reporting(short_addr, dev.endpoint, stype->cluster_id,
+                               dev.sensor.report_min_interval,
+                               dev.sensor.report_max_interval,
+                               dev.sensor.report_change);
     return ESP_OK;
 }
 
@@ -1616,12 +1633,8 @@ esp_err_t zigbee_read_all_sensor_data(void)
             continue;
         }
 
-        uint16_t cluster_id;
-        if (sensors[i].device_type == DEVICE_TYPE_TEMPERATURE_SENSOR) {
-            cluster_id = ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT;
-        } else if (sensors[i].device_type == DEVICE_TYPE_HUMIDITY_SENSOR) {
-            cluster_id = ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT;
-        } else {
+        const sensor_type_info_t *stype = sensor_type_get_info(sensors[i].device_type);
+        if (stype == NULL) {
             continue;  // Not a sensor
         }
 
@@ -1634,7 +1647,7 @@ esp_err_t zigbee_read_all_sensor_data(void)
         read_cmd.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
         read_cmd.zcl_basic_cmd.dst_endpoint = sensors[i].endpoint;
         read_cmd.zcl_basic_cmd.src_endpoint = HA_GATEWAY_ENDPOINT;
-        read_cmd.clusterID = cluster_id;
+        read_cmd.clusterID = stype->cluster_id;
 
         uint16_t attr_id = 0x0000;  // Measured value attribute
         read_cmd.attr_number = 1;

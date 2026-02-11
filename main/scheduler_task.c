@@ -5,6 +5,7 @@
 
 #include "scheduler_task.h"
 #include "device_manager.h"
+#include "sensor_types.h"
 #include "wifi_task.h"
 #include "led_task.h"
 #include "esp_log.h"
@@ -12,10 +13,6 @@
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include <time.h>
-
-// Zigbee cluster IDs for sensor data
-#define ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT 0x0402
-#define ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT 0x0405
 
 static const char *TAG = "SCHEDULER_TASK";
 
@@ -113,8 +110,7 @@ static bool is_sensor_actuator(uint64_t ieee_addr)
         device_config_t dev;
         if (device_manager_get_by_index(i, &dev) != ESP_OK) continue;
 
-        if (dev.device_type != DEVICE_TYPE_TEMPERATURE_SENSOR &&
-            dev.device_type != DEVICE_TYPE_HUMIDITY_SENSOR) continue;
+        if (!is_sensor_device(dev.device_type)) continue;
 
         if (dev.sensor.lower_linked_device == ieee_addr ||
             dev.sensor.upper_linked_device == ieee_addr ||
@@ -284,24 +280,17 @@ static void process_sensor_data(void)
     // Process all queued sensor data
     while (xQueueReceive(g_sensor_data_queue, &sensor_msg, 0) == pdTRUE) {
         ESP_LOGI(TAG, "Processing sensor data from queue - cluster: 0x%04x", sensor_msg.cluster_id);
-        // Convert raw value to actual reading
-        float converted_value = 0.0f;
-        device_type_t device_type;
-
-        if (sensor_msg.cluster_id == ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT) {
-            // Temperature: INT16 / 100 = °C
-            converted_value = (float)sensor_msg.raw_value / 100.0f;
-            device_type = DEVICE_TYPE_TEMPERATURE_SENSOR;
-            ESP_LOGI(TAG, "Temperature sensor data: %.2f°C (raw: %d)", converted_value, sensor_msg.raw_value);
-        } else if (sensor_msg.cluster_id == ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT) {
-            // Humidity: UINT16 / 100 = %
-            converted_value = (float)sensor_msg.raw_value / 100.0f;
-            device_type = DEVICE_TYPE_HUMIDITY_SENSOR;
-            ESP_LOGI(TAG, "Humidity sensor data: %.2f%% (raw: %d)", converted_value, sensor_msg.raw_value);
-        } else {
+        // Convert raw value to actual reading using sensor type registry
+        const sensor_type_info_t *info = sensor_type_get_by_cluster(sensor_msg.cluster_id);
+        if (info == NULL) {
             ESP_LOGW(TAG, "Unknown cluster ID: 0x%04x", sensor_msg.cluster_id);
             continue;
         }
+
+        float converted_value = (float)sensor_msg.raw_value / info->conversion_divisor;
+        device_type_t device_type = info->device_type;
+        ESP_LOGI(TAG, "%s sensor data: %.2f%s (raw: %d)",
+                 info->display_name, converted_value, info->unit, sensor_msg.raw_value);
 
         // Update device reading
         esp_err_t ret = device_manager_update_sensor_reading(
@@ -335,8 +324,7 @@ static void process_sensor_thresholds(void)
         }
 
         // Only process sensor devices
-        if (dev.device_type != DEVICE_TYPE_TEMPERATURE_SENSOR &&
-            dev.device_type != DEVICE_TYPE_HUMIDITY_SENSOR) {
+        if (!is_sensor_device(dev.device_type)) {
             continue;
         }
 
@@ -351,24 +339,67 @@ static void process_sensor_thresholds(void)
         if (dev.sensor.lower_linked_device != 0) {
             // Debounce: minimum 10 seconds between commands
             if (now - dev.sensor.last_lower_action >= 10) {
-                if (!dev.sensor.lower_active && value < dev.sensor.lower_threshold) {
-                    // Turn ON heating
-                    ESP_LOGI(TAG, "Lower threshold triggered: %.2f < %.2f - Turning ON linked device",
-                             value, dev.sensor.lower_threshold);
+                if (!dev.sensor.lower_active && !dev.sensor.lower_delay_pending
+                    && value < dev.sensor.lower_threshold) {
+                    // Threshold crossed
+                    if (dev.sensor.lower_delay_seconds == 0) {
+                        // No delay - immediate ON (original behavior)
+                        ESP_LOGI(TAG, "Lower threshold triggered: %.2f < %.2f - Turning ON linked device",
+                                 value, dev.sensor.lower_threshold);
 
-                    cmd_queue_msg_t msg = {
-                        .ieee_addr = dev.sensor.lower_linked_device,
-                        .endpoint = 1,  // Assume endpoint 1 for linked devices
-                        .cmd = CMD_ON
-                    };
-                    xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+                        cmd_queue_msg_t msg = {
+                            .ieee_addr = dev.sensor.lower_linked_device,
+                            .endpoint = 1,
+                            .cmd = CMD_ON
+                        };
+                        xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
 
-                    // Update state in device manager
-                    dev.sensor.lower_active = true;
-                    dev.sensor.last_lower_action = now;
-                    device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
-                } else if (dev.sensor.lower_active && value > (dev.sensor.lower_threshold + dev.sensor.lower_hysteresis)) {
-                    // Turn OFF heating
+                        dev.sensor.lower_active = true;
+                        dev.sensor.last_lower_action = now;
+                        device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
+                    } else {
+                        // Start delay timer
+                        dev.sensor.lower_delay_pending = true;
+                        dev.sensor.lower_delay_start = (uint32_t)now;
+                        ESP_LOGI(TAG, "Lower threshold crossed: %.2f < %.2f - delay started: %d sec",
+                                 value, dev.sensor.lower_threshold, dev.sensor.lower_delay_seconds);
+                        device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
+                    }
+                }
+                else if (dev.sensor.lower_delay_pending) {
+                    if (value >= dev.sensor.lower_threshold) {
+                        // Value recovered during delay - cancel
+                        dev.sensor.lower_delay_pending = false;
+                        dev.sensor.lower_delay_start = 0;
+                        ESP_LOGI(TAG, "Lower delay cancelled - value recovered: %.2f >= %.2f",
+                                 value, dev.sensor.lower_threshold);
+                        device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
+                    }
+                    else if ((now - dev.sensor.lower_delay_start) >= dev.sensor.lower_delay_seconds) {
+                        // Delay expired - check again and activate
+                        if (value < dev.sensor.lower_threshold) {
+                            ESP_LOGI(TAG, "Lower delay expired, still below threshold: %.2f < %.2f - Turning ON",
+                                     value, dev.sensor.lower_threshold);
+
+                            cmd_queue_msg_t msg = {
+                                .ieee_addr = dev.sensor.lower_linked_device,
+                                .endpoint = 1,
+                                .cmd = CMD_ON
+                            };
+                            xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+
+                            dev.sensor.lower_active = true;
+                            dev.sensor.last_lower_action = now;
+                        }
+                        dev.sensor.lower_delay_pending = false;
+                        dev.sensor.lower_delay_start = 0;
+                        device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
+                    }
+                    // else: delay still running, do nothing
+                }
+                else if (dev.sensor.lower_active
+                         && value > (dev.sensor.lower_threshold + dev.sensor.lower_hysteresis)) {
+                    // Turn OFF heating - immediate (no delay for OFF)
                     ESP_LOGI(TAG, "Lower threshold + hysteresis cleared: %.2f > %.2f - Turning OFF linked device",
                              value, dev.sensor.lower_threshold + dev.sensor.lower_hysteresis);
 
@@ -379,7 +410,6 @@ static void process_sensor_thresholds(void)
                     };
                     xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
 
-                    // Update state
                     dev.sensor.lower_active = false;
                     dev.sensor.last_lower_action = now;
                     device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
@@ -391,24 +421,67 @@ static void process_sensor_thresholds(void)
         if (dev.sensor.upper_linked_device != 0) {
             // Debounce: minimum 10 seconds between commands
             if (now - dev.sensor.last_upper_action >= 10) {
-                if (!dev.sensor.upper_active && value > dev.sensor.upper_threshold) {
-                    // Turn ON cooling
-                    ESP_LOGI(TAG, "Upper threshold triggered: %.2f > %.2f - Turning ON linked device",
-                             value, dev.sensor.upper_threshold);
+                if (!dev.sensor.upper_active && !dev.sensor.upper_delay_pending
+                    && value > dev.sensor.upper_threshold) {
+                    // Threshold crossed
+                    if (dev.sensor.upper_delay_seconds == 0) {
+                        // No delay - immediate ON (original behavior)
+                        ESP_LOGI(TAG, "Upper threshold triggered: %.2f > %.2f - Turning ON linked device",
+                                 value, dev.sensor.upper_threshold);
 
-                    cmd_queue_msg_t msg = {
-                        .ieee_addr = dev.sensor.upper_linked_device,
-                        .endpoint = 1,
-                        .cmd = CMD_ON
-                    };
-                    xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+                        cmd_queue_msg_t msg = {
+                            .ieee_addr = dev.sensor.upper_linked_device,
+                            .endpoint = 1,
+                            .cmd = CMD_ON
+                        };
+                        xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
 
-                    // Update state
-                    dev.sensor.upper_active = true;
-                    dev.sensor.last_upper_action = now;
-                    device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
-                } else if (dev.sensor.upper_active && value < (dev.sensor.upper_threshold - dev.sensor.upper_hysteresis)) {
-                    // Turn OFF cooling
+                        dev.sensor.upper_active = true;
+                        dev.sensor.last_upper_action = now;
+                        device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
+                    } else {
+                        // Start delay timer
+                        dev.sensor.upper_delay_pending = true;
+                        dev.sensor.upper_delay_start = (uint32_t)now;
+                        ESP_LOGI(TAG, "Upper threshold crossed: %.2f > %.2f - delay started: %d sec",
+                                 value, dev.sensor.upper_threshold, dev.sensor.upper_delay_seconds);
+                        device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
+                    }
+                }
+                else if (dev.sensor.upper_delay_pending) {
+                    if (value <= dev.sensor.upper_threshold) {
+                        // Value recovered during delay - cancel
+                        dev.sensor.upper_delay_pending = false;
+                        dev.sensor.upper_delay_start = 0;
+                        ESP_LOGI(TAG, "Upper delay cancelled - value recovered: %.2f <= %.2f",
+                                 value, dev.sensor.upper_threshold);
+                        device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
+                    }
+                    else if ((now - dev.sensor.upper_delay_start) >= dev.sensor.upper_delay_seconds) {
+                        // Delay expired - check again and activate
+                        if (value > dev.sensor.upper_threshold) {
+                            ESP_LOGI(TAG, "Upper delay expired, still above threshold: %.2f > %.2f - Turning ON",
+                                     value, dev.sensor.upper_threshold);
+
+                            cmd_queue_msg_t msg = {
+                                .ieee_addr = dev.sensor.upper_linked_device,
+                                .endpoint = 1,
+                                .cmd = CMD_ON
+                            };
+                            xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+
+                            dev.sensor.upper_active = true;
+                            dev.sensor.last_upper_action = now;
+                        }
+                        dev.sensor.upper_delay_pending = false;
+                        dev.sensor.upper_delay_start = 0;
+                        device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
+                    }
+                    // else: delay still running, do nothing
+                }
+                else if (dev.sensor.upper_active
+                         && value < (dev.sensor.upper_threshold - dev.sensor.upper_hysteresis)) {
+                    // Turn OFF cooling - immediate (no delay for OFF)
                     ESP_LOGI(TAG, "Upper threshold - hysteresis cleared: %.2f < %.2f - Turning OFF linked device",
                              value, dev.sensor.upper_threshold - dev.sensor.upper_hysteresis);
 
@@ -419,7 +492,6 @@ static void process_sensor_thresholds(void)
                     };
                     xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
 
-                    // Update state
                     dev.sensor.upper_active = false;
                     dev.sensor.last_upper_action = now;
                     device_manager_update_by_type(dev.ieee_addr, dev.device_type, &dev);
@@ -444,8 +516,7 @@ static void monitor_sensor_timeouts(void)
         }
 
         // Only process sensor devices
-        if (dev.device_type != DEVICE_TYPE_TEMPERATURE_SENSOR &&
-            dev.device_type != DEVICE_TYPE_HUMIDITY_SENSOR) {
+        if (!is_sensor_device(dev.device_type)) {
             continue;
         }
 
@@ -495,6 +566,12 @@ static void monitor_sensor_timeouts(void)
                     ESP_LOGI(TAG, "Timeout error action: %s error linked device",
                              dev.sensor.error_action_on ? "Turned ON" : "Turned OFF");
                 }
+
+                // Clear any pending delay timers
+                dev.sensor.lower_delay_pending = false;
+                dev.sensor.lower_delay_start = 0;
+                dev.sensor.upper_delay_pending = false;
+                dev.sensor.upper_delay_start = 0;
 
                 // Set error and invalidate reading
                 device_manager_set_error(dev.ieee_addr, "Sensor timeout");

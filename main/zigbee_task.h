@@ -83,6 +83,15 @@ esp_err_t zigbee_request_leave(uint64_t ieee_addr);
 esp_err_t zigbee_reconfigure_all_sensors(void);
 
 /**
+ * @brief Reconfigure reporting for a single sensor after config change
+ *
+ * @param ieee_addr Sensor IEEE address
+ * @param device_type DEVICE_TYPE_TEMPERATURE_SENSOR or DEVICE_TYPE_HUMIDITY_SENSOR
+ * @return ESP_OK on success
+ */
+esp_err_t zigbee_reconfigure_sensor(uint64_t ieee_addr, device_type_t device_type);
+
+/**
  * @brief Read current data from all sensors
  *
  * Sends read_attribute commands to all sensors to get current values.

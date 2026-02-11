@@ -128,15 +128,15 @@ static void on_button_short_press(void)
 
         // Send configure_report commands to wake up sleeping sensors
         // User can press sensor button during this ~2.5 second window
-        ESP_LOGI(TAG, "Reconfiguring sensors (wake sleeping sensors now!)");
-        zigbee_reconfigure_all_sensors();
+        //ESP_LOGI(TAG, "Reconfiguring sensors (wake sleeping sensors now!)");
+        //zigbee_reconfigure_all_sensors();
 
         // Read current sensor values
-        ESP_LOGI(TAG, "Reading sensor data");
-        zigbee_read_all_sensor_data();
+        //ESP_LOGI(TAG, "Reading sensor data");
+        //zigbee_read_all_sensor_data();
 
         // Small delay before starting BLE
-        vTaskDelay(pdMS_TO_TICKS(100));
+//vTaskDelay(pdMS_TO_TICKS(100));
 
         ble_task_start();
         s_ble_mode = true;

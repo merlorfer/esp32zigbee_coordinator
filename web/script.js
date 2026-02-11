@@ -7,6 +7,15 @@
 let devices = [];
 // permitJoinTimer removed - pairing is done via physical button
 let clockInterval = null;
+
+// Sensor type registry (mirrors sensor_types.c on firmware)
+const SENSOR_TYPES = {
+    'temperature_sensor': { unit: '°C', displayName: 'Homerseklet' },
+    'humidity_sensor': { unit: '%', displayName: 'Paratartalom' },
+};
+
+function isSensorDevice(type) { return type in SENSOR_TYPES; }
+function getSensorUnit(type) { return SENSOR_TYPES[type]?.unit || '?'; }
 let currentEditDevice = null;
 let modalDirty = false;
 let espTimeOffset = 0;  // Offset between ESP RTC and local time
@@ -621,7 +630,7 @@ async function deleteDevice(ieeeAddr, endpoint) {
 async function saveDeviceConfig() {
     const ieeeAddr = document.getElementById('edit-ieee-addr').value;
     const deviceType = document.getElementById('edit-device-type').value;
-    const isSensor = deviceType === 'temperature_sensor' || deviceType === 'humidity_sensor';
+    const isSensor = isSensorDevice(deviceType);
 
     const config = {
         custom_name: document.getElementById('edit-name').value,
@@ -639,6 +648,8 @@ async function saveDeviceConfig() {
             upper_hysteresis: parseFloat(document.getElementById('edit-upper-hysteresis').value),
             lower_linked_device: document.getElementById('edit-lower-linked').value || null,
             upper_linked_device: document.getElementById('edit-upper-linked').value || null,
+            lower_delay_seconds: parseInt(document.getElementById('edit-lower-delay').value) || 0,
+            upper_delay_seconds: parseInt(document.getElementById('edit-upper-delay').value) || 0,
             timeout_seconds: parseInt(document.getElementById('edit-timeout').value),
             error_linked_device: errorLinkedVal || null,
             error_action_on: errorActionRadio ? errorActionRadio.value === 'on' : false,
@@ -755,7 +766,7 @@ function renderDevices() {
     }
 
     container.innerHTML = devices.map(device => {
-        if (device.device_type === 'temperature_sensor' || device.device_type === 'humidity_sensor') {
+        if (isSensorDevice(device.device_type)) {
             return renderSensorCard(device);
         }
         return renderOnOffCard(device);
@@ -805,7 +816,7 @@ function renderOnOffCard(device) {
 
 function renderSensorCard(device) {
     const sensor = device.sensor || {};
-    const unit = device.device_type === 'temperature_sensor' ? '°C' : '%';
+    const unit = getSensorUnit(device.device_type);
     const valueStr = (sensor.valid && typeof sensor.current_value === 'number') ? sensor.current_value.toFixed(1) : '--';
     const batteryHtml = renderBatteryInfo(sensor);
     const errorHtml = (!sensor.valid && sensor.last_update > 0)
@@ -865,7 +876,7 @@ function getOnOffDevices() {
 
 function getSensorControlInfo(ieeeAddr) {
     return devices.filter(d =>
-        (d.device_type === 'temperature_sensor' || d.device_type === 'humidity_sensor') &&
+        isSensorDevice(d.device_type) &&
         d.sensor && (
             d.sensor.lower_linked_device === ieeeAddr ||
             d.sensor.upper_linked_device === ieeeAddr ||
@@ -899,20 +910,28 @@ function updateThresholdLogicDisplay() {
     const lowerH = parseFloat(document.getElementById('edit-lower-hysteresis').value) || 0;
     const upperT = parseFloat(document.getElementById('edit-upper-threshold').value) || 0;
     const upperH = parseFloat(document.getElementById('edit-upper-hysteresis').value) || 0;
+    const lowerDelay = parseInt(document.getElementById('edit-lower-delay').value) || 0;
+    const upperDelay = parseInt(document.getElementById('edit-upper-delay').value) || 0;
     const deviceType = document.getElementById('edit-device-type').value;
-    const unit = deviceType === 'humidity_sensor' ? '%' : '°C';
+    const unit = getSensorUnit(deviceType);
 
     const lowerDiv = document.getElementById('lower-threshold-logic');
     if (lowerDiv) {
+        const delayStr = lowerDelay > 0
+            ? ` → ${lowerDelay}mp varakozas → BE (ha meg &lt; ${lowerT.toFixed(1)}${unit})`
+            : ' → BE';
         lowerDiv.innerHTML =
-            `<span class="logic-on">ertek &lt; ${lowerT.toFixed(1)}${unit} → BE</span>` +
+            `<span class="logic-on">ertek &lt; ${lowerT.toFixed(1)}${unit}${delayStr}</span>` +
             `<span class="logic-off">ertek &gt; ${(lowerT + lowerH).toFixed(1)}${unit} → KI</span>`;
     }
 
     const upperDiv = document.getElementById('upper-threshold-logic');
     if (upperDiv) {
+        const delayStr = upperDelay > 0
+            ? ` → ${upperDelay}mp varakozas → BE (ha meg &gt; ${upperT.toFixed(1)}${unit})`
+            : ' → BE';
         upperDiv.innerHTML =
-            `<span class="logic-on">ertek &gt; ${upperT.toFixed(1)}${unit} → BE</span>` +
+            `<span class="logic-on">ertek &gt; ${upperT.toFixed(1)}${unit}${delayStr}</span>` +
             `<span class="logic-off">ertek &lt; ${(upperT - upperH).toFixed(1)}${unit} → KI</span>`;
     }
 }
@@ -921,7 +940,7 @@ function updateReportChangeDisplay() {
     const rawValue = parseInt(document.getElementById('edit-report-change').value) || 50;
     const deviceType = document.getElementById('edit-device-type').value;
     const converted = (rawValue / 100).toFixed(2);
-    const unit = deviceType === 'humidity_sensor' ? '%' : '°C';
+    const unit = getSensorUnit(deviceType);
     document.getElementById('report-change-display').textContent = converted;
     document.getElementById('report-change-unit').textContent = unit;
 }
@@ -940,13 +959,13 @@ function editDevice(ieeeAddr, endpoint, deviceType) {
     document.getElementById('edit-name').value = device.custom_name || '';
     document.getElementById('edit-device-type').value = device.device_type || 'on_off_light';
 
-    const isSensor = device.device_type === 'temperature_sensor' || device.device_type === 'humidity_sensor';
+    const isSensor = isSensorDevice(device.device_type);
     document.getElementById('onoff-settings').classList.toggle('hidden', isSensor);
     document.getElementById('sensor-settings').classList.toggle('hidden', !isSensor);
 
     if (isSensor) {
         const sensor = device.sensor || {};
-        const unit = device.device_type === 'temperature_sensor' ? '°C' : '%';
+        const unit = getSensorUnit(device.device_type);
 
         document.getElementById('edit-current-value').textContent =
             (sensor.valid && typeof sensor.current_value === 'number') ? sensor.current_value.toFixed(1) : '--';
@@ -961,6 +980,9 @@ function editDevice(ieeeAddr, endpoint, deviceType) {
         document.getElementById('edit-report-min').value = sensor.report_min_interval ?? 0;
         document.getElementById('edit-report-max').value = sensor.report_max_interval ?? 10;
         document.getElementById('edit-report-change').value = sensor.report_change ?? 50;
+
+        document.getElementById('edit-lower-delay').value = sensor.lower_delay_seconds ?? 0;
+        document.getElementById('edit-upper-delay').value = sensor.upper_delay_seconds ?? 0;
 
         // Set error action radio
         const errorActionVal = sensor.error_action_on ? 'on' : 'off';
