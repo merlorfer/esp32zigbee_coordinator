@@ -592,7 +592,11 @@ static void zigbee_task(void *pvParameters)
         esp_zb_attribute_list_t *hum_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT);
         esp_zb_cluster_list_add_humidity_meas_cluster(cluster_list, hum_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
 
-        ESP_LOGI(TAG, "Added temperature and humidity client clusters to coordinator");
+        // Add pressure measurement cluster (CLIENT ROLE to receive water level reports)
+        esp_zb_attribute_list_t *press_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT);
+        esp_zb_cluster_list_add_pressure_meas_cluster(cluster_list, press_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+
+        ESP_LOGI(TAG, "Added temperature, humidity and pressure client clusters to coordinator");
     } else {
         ESP_LOGW(TAG, "Failed to get cluster list for endpoint");
     }
