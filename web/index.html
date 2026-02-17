@@ -91,6 +91,38 @@
             <!-- Global Settings Section -->
             <section class="card">
                 <h2>Globalis Beallitasok</h2>
+
+                <!-- Local XKC Sensor Toggle -->
+                <div class="form-group">
+                    <div class="toggle-label">
+                        <span>Helyi XKC vizszint szenzor:</span>
+                        <label class="switch">
+                            <input type="checkbox" id="xkc-enabled" onchange="onXkcToggleChange()">
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                    <small class="hint">Kozvetlenul a koordinator GPIO-hoz csatlakoztatott XKC szenzorok</small>
+                </div>
+
+                <!-- GPIO Pin Selection (shown only when toggle is ON) -->
+                <div id="xkc-gpio-settings" class="hidden">
+                    <div class="form-group">
+                        <label for="xkc-gpio-lower">Also szenzor GPIO:</label>
+                        <select id="xkc-gpio-lower" class="form-select"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="xkc-gpio-upper">Felso szenzor GPIO:</label>
+                        <select id="xkc-gpio-upper" class="form-select"></select>
+                    </div>
+                    <div class="warning-box">
+                        &#9888; A GPIO labak modositasa hardware csatlakozast igenyel.
+                        Ellenorizze, hogy a szenzorok a megfelelo labakra vannak kotve!
+                    </div>
+                </div>
+
+                <hr style="margin: 15px 0; border-color: var(--border-color);">
+
+                <!-- WiFi behavior (kept) -->
                 <div class="form-group">
                     <label>Wi-Fi AP bekapcsolasakor:</label>
                     <div class="radio-group">
@@ -104,6 +136,7 @@
                         </label>
                     </div>
                 </div>
+
                 <button onclick="saveGlobalConfig()" class="btn btn-primary">Beallitasok mentese</button>
             </section>
 
