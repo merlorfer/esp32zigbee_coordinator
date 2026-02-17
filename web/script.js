@@ -12,9 +12,18 @@ let clockInterval = null;
 const SENSOR_TYPES = {
     'temperature_sensor': { unit: '°C', displayName: 'Homerseklet' },
     'humidity_sensor': { unit: '%', displayName: 'Paratartalom' },
+    'water_level_sensor': { unit: '', displayName: 'Vizszint' },
 };
 
 function isSensorDevice(type) { return type in SENSOR_TYPES; }
+
+// Water level display helper
+function getWaterLevelText(value) {
+    if (value === 0) return 'Ures';
+    if (value === 1) return 'Alacsony';
+    if (value === 2) return 'Tele';
+    return '--';
+}
 function getSensorUnit(type) { return SENSOR_TYPES[type]?.unit || '?'; }
 let currentEditDevice = null;
 let modalDirty = false;
@@ -694,24 +703,73 @@ async function loadGlobalConfig() {
     try {
         const data = await apiRequest('/api/config');
 
+        // WiFi behavior
         if (data.wifi_on_behavior) {
             document.getElementById('wifi-maintain').checked = true;
         } else {
             document.getElementById('wifi-poweroff').checked = true;
         }
+
+        // Local XKC sensor
+        const xkcEnabled = data.local_xkc_enabled || false;
+        document.getElementById('xkc-enabled').checked = xkcEnabled;
+
+        // Populate GPIO dropdowns
+        const validGpios = data.valid_xkc_gpios || [3, 4, 5, 6, 7, 10, 11, 14, 18, 19, 20, 21, 22, 23];
+        populateGpioSelect('xkc-gpio-lower', validGpios, data.local_xkc_gpio_lower || 4);
+        populateGpioSelect('xkc-gpio-upper', validGpios, data.local_xkc_gpio_upper || 5);
+
+        // Show/hide GPIO settings
+        document.getElementById('xkc-gpio-settings').classList.toggle('hidden', !xkcEnabled);
     } catch (error) {
         console.error('Config load error:', error);
     }
 }
 
+function populateGpioSelect(selectId, validPins, selectedPin) {
+    const select = document.getElementById(selectId);
+    select.innerHTML = validPins.map(pin =>
+        '<option value="' + pin + '"' + (pin === selectedPin ? ' selected' : '') + '>GPIO ' + pin + '</option>'
+    ).join('');
+}
+
+function onXkcToggleChange() {
+    const enabled = document.getElementById('xkc-enabled').checked;
+    document.getElementById('xkc-gpio-settings').classList.toggle('hidden', !enabled);
+
+    if (enabled) {
+        if (!confirm('Figyelmeztetes: A helyi XKC szenzor engedelyezese GPIO hardware csatlakozast igenyel. ' +
+                     'Gyozodjon meg rola, hogy az XKC szenzorok csatlakoztatva vannak a megfelelo GPIO labakra.\n\nFolytatja?')) {
+            document.getElementById('xkc-enabled').checked = false;
+            document.getElementById('xkc-gpio-settings').classList.add('hidden');
+        }
+    }
+}
+
 async function saveGlobalConfig() {
     const maintain = document.getElementById('wifi-maintain').checked;
+    const xkcEnabled = document.getElementById('xkc-enabled').checked;
+    const gpioLower = parseInt(document.getElementById('xkc-gpio-lower').value);
+    const gpioUpper = parseInt(document.getElementById('xkc-gpio-upper').value);
+
+    // Validate GPIO pins are different
+    if (xkcEnabled && gpioLower === gpioUpper) {
+        showToast('Az also es felso szenzor nem lehet ugyanaz a GPIO lab!', true);
+        return;
+    }
 
     try {
-        const data = await apiRequest('/api/config', 'POST', { wifi_on_behavior: maintain });
+        const data = await apiRequest('/api/config', 'POST', {
+            wifi_on_behavior: maintain,
+            local_xkc_enabled: xkcEnabled,
+            local_xkc_gpio_lower: gpioLower,
+            local_xkc_gpio_upper: gpioUpper,
+        });
 
         if (data.success || data.status === 'ok') {
             showToast('Beallitasok mentve');
+            // Reload devices to see the new/removed virtual device
+            setTimeout(function() { loadDevices(); }, 1000);
         } else {
             showToast(data.message || 'Hiba tortent', true);
         }
@@ -817,7 +875,10 @@ function renderOnOffCard(device) {
 function renderSensorCard(device) {
     const sensor = device.sensor || {};
     const unit = getSensorUnit(device.device_type);
-    const valueStr = (sensor.valid && typeof sensor.current_value === 'number') ? sensor.current_value.toFixed(1) : '--';
+    const isWaterLevel = device.device_type === 'water_level_sensor';
+    const valueStr = (sensor.valid && typeof sensor.current_value === 'number')
+        ? (isWaterLevel ? getWaterLevelText(sensor.current_value) : sensor.current_value.toFixed(1))
+        : '--';
     const batteryHtml = renderBatteryInfo(sensor);
     const errorHtml = (!sensor.valid && sensor.last_update > 0)
         ? '<span class="error-badge">&#9888; Sensor timeout</span>' : '';

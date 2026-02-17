@@ -25,6 +25,15 @@ extern "C" {
 #define GPIO_LED_STATUS         GPIO_NUM_15
 
 /* ============================================================================
+ * Local XKC Sensor Configuration
+ * ============================================================================ */
+
+#define LOCAL_XKC_IEEE_ADDR     0x0000000000000001ULL  // Reserved address for local XKC sensor
+#define LOCAL_XKC_ENDPOINT      1                       // Virtual endpoint
+#define DEFAULT_XKC_GPIO_LOWER  4                       // Default GPIO for lower sensor
+#define DEFAULT_XKC_GPIO_UPPER  5                       // Default GPIO for upper sensor
+
+/* ============================================================================
  * Wi-Fi Configuration
  * ============================================================================ */
 
@@ -230,6 +239,11 @@ typedef struct {
     uint8_t device_count;
     bool rtc_initialized;
     uint32_t last_rtc_set;
+
+    // Local XKC sensor configuration (persisted to NVS)
+    bool local_xkc_enabled;       // Toggle: enable local XKC water level sensor
+    uint8_t local_xkc_gpio_lower; // GPIO pin for lower sensor (default: DEFAULT_XKC_GPIO_LOWER)
+    uint8_t local_xkc_gpio_upper; // GPIO pin for upper sensor (default: DEFAULT_XKC_GPIO_UPPER)
 } global_config_t;
 
 /**

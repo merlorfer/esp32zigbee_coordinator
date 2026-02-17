@@ -22,6 +22,7 @@
 #include "ble_task.h"
 #include "zigbee_task.h"
 #include "scheduler_task.h"
+#include "local_xkc_sensor.h"
 
 static const char *TAG = "MAIN";
 
@@ -110,6 +111,22 @@ static void on_button_short_press(void)
         }
 
         scheduler_task_start();
+
+        // Start local XKC sensor if enabled in config
+        {
+            global_config_t gconfig;
+            device_manager_get_global_config(&gconfig);
+            if (gconfig.local_xkc_enabled) {
+                uint8_t gpio_l = gconfig.local_xkc_gpio_lower > 0 ? gconfig.local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER;
+                uint8_t gpio_u = gconfig.local_xkc_gpio_upper > 0 ? gconfig.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER;
+                esp_err_t xkc_ret = local_xkc_sensor_start(gpio_l, gpio_u);
+                if (xkc_ret == ESP_OK) {
+                    ESP_LOGI(TAG, "Local XKC sensor started (GPIO %d/%d)", gpio_l, gpio_u);
+                } else {
+                    ESP_LOGW(TAG, "Failed to start local XKC sensor: %s", esp_err_to_name(xkc_ret));
+                }
+            }
+        }
 
         led_set_state(LED_STATE_NORMAL);
         xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
@@ -304,6 +321,9 @@ void app_main(void)
 
     // Initialize scheduler task
     ESP_ERROR_CHECK(scheduler_task_init());
+
+    // Initialize local XKC sensor module (does not start reading yet)
+    ESP_ERROR_CHECK(local_xkc_sensor_init());
 
     // Start in setup mode with WiFi AP + BLE
     ESP_LOGI(TAG, "Starting in setup mode (WiFi AP + BLE)");

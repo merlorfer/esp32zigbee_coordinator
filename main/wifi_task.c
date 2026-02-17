@@ -6,6 +6,7 @@
 #include "wifi_task.h"
 #include "device_manager.h"
 #include "sensor_types.h"
+#include "local_xkc_sensor.h"
 #include "zigbee_task.h"
 #include "led_task.h"
 #include "nvs_manager.h"
@@ -670,9 +671,23 @@ static esp_err_t api_device_delete_handler(httpd_req_t *req)
     format_ieee_addr_hex(ieee_str, sizeof(ieee_str), ieee_addr);
     ESP_LOGI(TAG, "Delete device request for IEEE addr: %s", ieee_str);
 
-    esp_err_t err = device_manager_remove(ieee_addr);
+    // Handle local XKC virtual device deletion
+    if (ieee_addr == LOCAL_XKC_IEEE_ADDR) {
+        if (local_xkc_sensor_is_active()) {
+            local_xkc_sensor_stop();
+        }
+        // Disable in global config
+        global_config_t gconfig;
+        device_manager_get_global_config(&gconfig);
+        gconfig.local_xkc_enabled = false;
+        device_manager_set_global_config(&gconfig);
+        // Device already removed by stop(), skip Zigbee leave
+        ESP_LOGI(TAG, "Local XKC virtual device removed and disabled");
+    }
 
-    if (err == ESP_OK) {
+    esp_err_t err = (ieee_addr == LOCAL_XKC_IEEE_ADDR) ? ESP_OK : device_manager_remove(ieee_addr);
+
+    if (err == ESP_OK && ieee_addr != LOCAL_XKC_IEEE_ADDR) {
         // Try to send leave request now (will fail if Zigbee not running)
         if (zigbee_request_leave(ieee_addr) != ESP_OK) {
             // Queue for later when Zigbee resumes
@@ -748,6 +763,22 @@ static esp_err_t api_global_config_get_handler(httpd_req_t *req)
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "wifi_on_behavior", config.wifi_on_behavior);
 
+    // Local XKC sensor settings
+    cJSON_AddBoolToObject(response, "local_xkc_enabled", config.local_xkc_enabled);
+    cJSON_AddNumberToObject(response, "local_xkc_gpio_lower",
+        config.local_xkc_gpio_lower > 0 ? config.local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER);
+    cJSON_AddNumberToObject(response, "local_xkc_gpio_upper",
+        config.local_xkc_gpio_upper > 0 ? config.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER);
+
+    // Valid GPIO pin list for frontend dropdown
+    uint8_t gpio_count;
+    const uint8_t *valid_gpios = local_xkc_sensor_get_valid_gpios(&gpio_count);
+    cJSON *gpio_array = cJSON_CreateArray();
+    for (uint8_t i = 0; i < gpio_count; i++) {
+        cJSON_AddItemToArray(gpio_array, cJSON_CreateNumber(valid_gpios[i]));
+    }
+    cJSON_AddItemToObject(response, "valid_xkc_gpios", gpio_array);
+
     char *json_str = cJSON_Print(response);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json_str);
@@ -759,7 +790,7 @@ static esp_err_t api_global_config_get_handler(httpd_req_t *req)
 
 static esp_err_t api_global_config_post_handler(httpd_req_t *req)
 {
-    char buf[128];
+    char buf[256];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
         httpd_resp_send_500(req);
@@ -781,9 +812,79 @@ static esp_err_t api_global_config_post_handler(httpd_req_t *req)
         config.wifi_on_behavior = cJSON_IsTrue(item);
     }
 
+    // Local XKC sensor settings
+    bool xkc_was_enabled = config.local_xkc_enabled;
+    uint8_t old_gpio_lower = config.local_xkc_gpio_lower;
+    uint8_t old_gpio_upper = config.local_xkc_gpio_upper;
+
+    item = cJSON_GetObjectItem(root, "local_xkc_enabled");
+    if (cJSON_IsBool(item)) {
+        config.local_xkc_enabled = cJSON_IsTrue(item);
+    }
+
+    item = cJSON_GetObjectItem(root, "local_xkc_gpio_lower");
+    if (cJSON_IsNumber(item)) {
+        config.local_xkc_gpio_lower = (uint8_t)item->valueint;
+    }
+
+    item = cJSON_GetObjectItem(root, "local_xkc_gpio_upper");
+    if (cJSON_IsNumber(item)) {
+        config.local_xkc_gpio_upper = (uint8_t)item->valueint;
+    }
+
     cJSON_Delete(root);
 
+    // Validate GPIO pins if XKC is being enabled
+    if (config.local_xkc_enabled) {
+        if (!local_xkc_sensor_is_valid_gpio(config.local_xkc_gpio_lower) ||
+            !local_xkc_sensor_is_valid_gpio(config.local_xkc_gpio_upper)) {
+            cJSON *response = cJSON_CreateObject();
+            cJSON_AddBoolToObject(response, "success", false);
+            cJSON_AddStringToObject(response, "message", "Ervenytelen GPIO lab");
+            char *json_str = cJSON_Print(response);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, json_str);
+            free(json_str);
+            cJSON_Delete(response);
+            return ESP_OK;
+        }
+        if (config.local_xkc_gpio_lower == config.local_xkc_gpio_upper) {
+            cJSON *response = cJSON_CreateObject();
+            cJSON_AddBoolToObject(response, "success", false);
+            cJSON_AddStringToObject(response, "message", "Az also es felso szenzor GPIO nem lehet azonos");
+            char *json_str = cJSON_Print(response);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, json_str);
+            free(json_str);
+            cJSON_Delete(response);
+            return ESP_OK;
+        }
+    }
+
     device_manager_set_global_config(&config);
+
+    // Handle XKC sensor start/stop if in Zigbee operational mode
+    EventBits_t bits = xEventGroupGetBits(g_event_group);
+    if (bits & EVENT_ZIGBEE_MODE_BIT) {
+        bool gpio_changed = (config.local_xkc_gpio_lower != old_gpio_lower ||
+                            config.local_xkc_gpio_upper != old_gpio_upper);
+
+        if (config.local_xkc_enabled && !xkc_was_enabled) {
+            // Enabling: start sensor
+            uint8_t gl = config.local_xkc_gpio_lower > 0 ? config.local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER;
+            uint8_t gu = config.local_xkc_gpio_upper > 0 ? config.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER;
+            local_xkc_sensor_start(gl, gu);
+        } else if (!config.local_xkc_enabled && xkc_was_enabled) {
+            // Disabling: stop sensor
+            local_xkc_sensor_stop();
+        } else if (config.local_xkc_enabled && gpio_changed) {
+            // GPIO pins changed: restart sensor
+            local_xkc_sensor_stop();
+            uint8_t gl = config.local_xkc_gpio_lower > 0 ? config.local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER;
+            uint8_t gu = config.local_xkc_gpio_upper > 0 ? config.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER;
+            local_xkc_sensor_start(gl, gu);
+        }
+    }
 
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "success", true);
@@ -801,6 +902,11 @@ static esp_err_t api_global_config_post_handler(httpd_req_t *req)
 static esp_err_t api_factory_reset_handler(httpd_req_t *req)
 {
     ESP_LOGW(TAG, "Factory reset requested!");
+
+    // Stop local XKC sensor if running
+    if (local_xkc_sensor_is_active()) {
+        local_xkc_sensor_stop();
+    }
 
     // Clear all devices
     uint8_t count = device_manager_get_count();
