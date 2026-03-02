@@ -992,3 +992,123 @@ select:focus {
     background: var(--card-bg);
     color: var(--text-color);
 }
+
+/* Rules Engine */
+#rules-editor {
+    width: 100%;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background-color: #1e1e2e;
+    color: #cdd6f4;
+    resize: vertical;
+    tab-size: 2;
+}
+
+#rules-editor:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+}
+
+.rules-info {
+    margin-bottom: 10px;
+}
+
+.rules-info summary {
+    cursor: pointer;
+    color: var(--primary-color);
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.rules-info pre {
+    background-color: #1e1e2e;
+    color: #cdd6f4;
+    padding: 12px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    overflow-x: auto;
+    margin-top: 8px;
+}
+
+.rules-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.rules-status-ok {
+    color: var(--success-color);
+    font-size: 0.85rem;
+}
+
+.rules-status-error {
+    color: var(--danger-color);
+    font-size: 0.85rem;
+}
+
+.rules-status-bar {
+    font-size: 0.85rem;
+    color: var(--text-light);
+    margin-bottom: 8px;
+}
+
+.rules-cards {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.rules-card {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+}
+
+.rules-var-card {
+    background-color: #e8f4fd;
+    border: 1px solid #b3d9f2;
+}
+
+.rules-timer-card {
+    background-color: #fef3e2;
+    border: 1px solid #f0d4a0;
+}
+
+.rules-card-name {
+    font-weight: 600;
+    color: var(--text-color);
+}
+
+.rules-card-value {
+    color: var(--primary-dark);
+    font-family: monospace;
+}
+
+.rules-card-status.active {
+    color: var(--success-color);
+    font-weight: 500;
+    font-size: 0.8rem;
+}
+
+.btn-tiny {
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: var(--card-bg);
+    cursor: pointer;
+}
+
+.btn-tiny:hover {
+    background: var(--bg-color);
+}

@@ -140,6 +140,74 @@
                 <button onclick="saveGlobalConfig()" class="btn btn-primary">Beallitasok mentese</button>
             </section>
 
+            <!-- Rules Engine Section -->
+            <section class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h2 style="margin: 0; padding: 0; border: none;">Szabalyok</h2>
+                    <button onclick="toggleRulesEditor()" class="btn btn-secondary btn-small" id="rules-toggle-btn">
+                        Szerkesztes
+                    </button>
+                </div>
+                <p class="hint">ESPEasy-szeru szabalyok. Eszkozneveknel ne hasznaljon szokozoket (hasznaljon _ jelet).</p>
+
+                <div id="rules-status-bar" class="rules-status-bar">
+                    <span id="rules-count">0 szabaly betoltve</span>
+                </div>
+
+                <!-- Rules Editor (hidden by default) -->
+                <div id="rules-editor-section" class="hidden">
+                    <div class="rules-info">
+                        <details>
+                            <summary>Szintaxis segitseg</summary>
+                            <pre>on SensorNev do
+  if [SensorNev] < 18 and [hour] >= 6
+    on Eszkoz
+  else
+    off Eszkoz
+  endif
+endon
+
+on timer 1 do
+  off Pump
+endon
+
+on boot do
+  set var1 0
+endon
+
+on time 18:00 do
+  on Light
+endon
+
+// Parancsok: on/off/toggle Eszkoz
+// Timer: timerSet N mp, timerCancel N
+// Valtozo: set var1 ertek
+// Ertekek: [SensorNev] [var1] [hour]
+//          [minute] [uptime]
+// Operatorok: < > <= >= = !=
+// Logika: and, or, not</pre>
+                        </details>
+                    </div>
+                    <textarea id="rules-editor" rows="12" spellcheck="false" placeholder="// Ide irja a szabalyokat..."></textarea>
+                    <div class="rules-toolbar">
+                        <button onclick="saveRules()" class="btn btn-primary btn-small">Mentes</button>
+                        <span id="rules-save-status"></span>
+                    </div>
+                </div>
+
+                <!-- Rules Variables -->
+                <div id="rules-vars-section">
+                    <h3 style="margin-top: 15px; font-size: 0.95rem;">Valtozok</h3>
+                    <div id="rules-vars-list" class="rules-cards"></div>
+                </div>
+
+                <!-- Rules Timers -->
+                <div id="rules-timers-section">
+                    <h3 style="margin-top: 10px; font-size: 0.95rem;">Timerek</h3>
+                    <div id="rules-timers-list" class="rules-cards"></div>
+                </div>
+            </section>
+
             <!-- Mode Control Info Section -->
             <section class="card action-card">
                 <h2>Vezerles</h2>

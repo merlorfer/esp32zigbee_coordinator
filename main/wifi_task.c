@@ -7,6 +7,7 @@
 #include "device_manager.h"
 #include "sensor_types.h"
 #include "local_xkc_sensor.h"
+#include "rules_engine.h"
 #include "zigbee_task.h"
 #include "led_task.h"
 #include "nvs_manager.h"
@@ -943,6 +944,159 @@ static esp_err_t api_factory_reset_handler(httpd_req_t *req)
 }
 
 // ============================================================================
+// Rules API Handlers
+// ============================================================================
+
+static esp_err_t api_rules_get_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddStringToObject(root, "text", rules_engine_get_text());
+
+    // Variables
+    cJSON *vars = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        cJSON_AddItemToArray(vars, cJSON_CreateNumber(rules_engine_get_var(i)));
+    }
+    cJSON_AddItemToObject(root, "variables", vars);
+
+    // Timers
+    cJSON *timers = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_TIMERS; i++) {
+        bool active;
+        int32_t remaining;
+        rules_engine_get_timer_state(i, &active, &remaining);
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddNumberToObject(t, "id", i + 1);
+        cJSON_AddBoolToObject(t, "active", active);
+        cJSON_AddNumberToObject(t, "remaining", remaining);
+        cJSON_AddItemToArray(timers, t);
+    }
+    cJSON_AddItemToObject(root, "timers", timers);
+
+    cJSON_AddNumberToObject(root, "rule_count", rules_engine_get_rule_count());
+
+    char *json_str = cJSON_Print(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t api_rules_post_handler(httpd_req_t *req)
+{
+    // Read request body - rules text can be up to 2KB + JSON overhead
+    char *buf = malloc(MAX_RULES_TEXT_SIZE + 128);
+    if (buf == NULL) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    int total_len = 0;
+    int remaining = req->content_len;
+    while (remaining > 0) {
+        int ret = httpd_req_recv(req, buf + total_len,
+                                 (remaining < 512) ? remaining : 512);
+        if (ret <= 0) {
+            free(buf);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        total_len += ret;
+        remaining -= ret;
+    }
+    buf[total_len] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *text_obj = cJSON_GetObjectItem(root, "text");
+    if (!cJSON_IsString(text_obj)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing 'text' field");
+        return ESP_FAIL;
+    }
+
+    esp_err_t ret = rules_engine_load_text(text_obj->valuestring);
+
+    cJSON *response = cJSON_CreateObject();
+    if (ret == ESP_OK) {
+        // Save to NVS on successful parse
+        rules_engine_save();
+        cJSON_AddBoolToObject(response, "ok", true);
+        cJSON_AddNumberToObject(response, "rule_count", rules_engine_get_rule_count());
+    } else {
+        cJSON_AddBoolToObject(response, "ok", false);
+        cJSON_AddStringToObject(response, "error", rules_engine_get_parse_error());
+    }
+
+    cJSON_Delete(root);
+
+    char *json_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(response);
+    return ESP_OK;
+}
+
+static esp_err_t api_rules_var_post_handler(httpd_req_t *req)
+{
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *index_obj = cJSON_GetObjectItem(root, "index");
+    cJSON *value_obj = cJSON_GetObjectItem(root, "value");
+    if (!cJSON_IsNumber(index_obj) || !cJSON_IsNumber(value_obj)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing index/value");
+        return ESP_FAIL;
+    }
+
+    int index = index_obj->valueint;
+    float value = (float)value_obj->valuedouble;
+    cJSON_Delete(root);
+
+    if (index < 0 || index >= MAX_RULE_VARIABLES) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid variable index");
+        return ESP_FAIL;
+    }
+
+    rules_engine_set_var((uint8_t)index, value);
+    rules_engine_save();
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", true);
+
+    char *json_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(response);
+    return ESP_OK;
+}
+
+// ============================================================================
 // HTTP Server Setup
 // ============================================================================
 
@@ -950,7 +1104,7 @@ static esp_err_t start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 24;  // Increased for PWA files
+    config.max_uri_handlers = 28;  // Increased for PWA files + rules API
 
     if (httpd_start(&s_server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -1093,6 +1247,27 @@ static esp_err_t start_webserver(void)
         .handler = api_global_config_post_handler
     };
     httpd_register_uri_handler(s_server, &api_global_config_post);
+
+    httpd_uri_t api_rules_get = {
+        .uri = "/api/rules",
+        .method = HTTP_GET,
+        .handler = api_rules_get_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_get);
+
+    httpd_uri_t api_rules_post = {
+        .uri = "/api/rules",
+        .method = HTTP_POST,
+        .handler = api_rules_post_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_post);
+
+    httpd_uri_t api_rules_var = {
+        .uri = "/api/rules/var",
+        .method = HTTP_POST,
+        .handler = api_rules_var_post_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_var);
 
     httpd_uri_t api_factory_reset = {
         .uri = "/api/factory-reset",

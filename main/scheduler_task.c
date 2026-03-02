@@ -6,6 +6,7 @@
 #include "scheduler_task.h"
 #include "device_manager.h"
 #include "sensor_types.h"
+#include "rules_engine.h"
 #include "wifi_task.h"
 #include "led_task.h"
 #include "esp_log.h"
@@ -305,6 +306,12 @@ static void process_sensor_data(void)
             // Device not found - this can happen during initial pairing when data arrives
             // before the device is fully added. Just skip silently.
             ESP_LOGD(TAG, "Sensor device not found yet (normal during pairing)");
+        } else {
+            // Notify rules engine about sensor data
+            int dev_idx = device_manager_find_index_by_type(sensor_msg.ieee_addr, device_type);
+            if (dev_idx >= 0) {
+                rules_engine_on_sensor_data((uint8_t)dev_idx, converted_value);
+            }
         }
     }
 }
@@ -669,6 +676,10 @@ static void scheduler_task(void *pvParameters)
         // Evaluate sensor thresholds
         process_sensor_thresholds();
 
+        // Rules engine: timer countdown and time-based triggers
+        rules_engine_timer_tick();
+        rules_engine_on_time_tick(current_time.tm_hour, current_time.tm_min);
+
         // Monitor sensor timeouts
         monitor_sensor_timeouts();
 
@@ -721,6 +732,11 @@ esp_err_t scheduler_task_start(void)
     for (uint8_t i = 0; i < s_tracked_device_count; i++) {
         s_device_phases[i].last_phase = 255;
     }
+
+    // Initialize and trigger rules engine boot event
+    rules_engine_init();
+    rules_engine_on_boot();
+
     ESP_LOGI(TAG, "Scheduler task started, delay cycle initialized at %lu", (unsigned long)s_delay_cycle_start);
     return ESP_OK;
 }

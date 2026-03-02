@@ -113,6 +113,42 @@ esp_err_t nvs_save_device_count(uint8_t count);
  */
 esp_err_t nvs_load_device_count(uint8_t *count);
 
+/* ============================================================================
+ * Rules Engine NVS Functions
+ * ============================================================================ */
+
+/**
+ * @brief Save rules text to NVS
+ * @param text Rules text string
+ * @param len Length of text (excluding null terminator)
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_save_rules_text(const char *text, size_t len);
+
+/**
+ * @brief Load rules text from NVS
+ * @param text Buffer to store loaded text
+ * @param len Pointer to buffer size (in), actual length loaded (out)
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_load_rules_text(char *text, size_t *len);
+
+/**
+ * @brief Save rules variables to NVS
+ * @param vars Array of float variables
+ * @param count Number of variables
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_save_rules_vars(const float *vars, uint8_t count);
+
+/**
+ * @brief Load rules variables from NVS
+ * @param vars Array to store variables
+ * @param count Number of variables to load
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_load_rules_vars(float *vars, uint8_t count);
+
 #ifdef __cplusplus
 }
 #endif

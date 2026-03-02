@@ -10,6 +10,7 @@
 #include "device_manager.h"
 #include "sensor_types.h"
 #include "local_xkc_sensor.h"
+#include "rules_engine.h"
 #include "zigbee_task.h"
 #include "led_task.h"
 #include "common.h"
@@ -929,6 +930,119 @@ static char *handle_factory_reset(cJSON *params)
 }
 
 /* ============================================================================
+ * Rules Engine Handlers
+ * ============================================================================ */
+
+static char *handle_get_rules(cJSON *params)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", "ok");
+    cJSON_AddStringToObject(root, "text", rules_engine_get_text());
+
+    cJSON *vars = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        cJSON_AddItemToArray(vars, cJSON_CreateNumber(rules_engine_get_var(i)));
+    }
+    cJSON_AddItemToObject(root, "variables", vars);
+
+    cJSON *timers = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_TIMERS; i++) {
+        bool active;
+        int32_t remaining;
+        rules_engine_get_timer_state(i, &active, &remaining);
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddNumberToObject(t, "id", i + 1);
+        cJSON_AddBoolToObject(t, "active", active);
+        cJSON_AddNumberToObject(t, "remaining", remaining);
+        cJSON_AddItemToArray(timers, t);
+    }
+    cJSON_AddItemToObject(root, "timers", timers);
+    cJSON_AddNumberToObject(root, "rule_count", rules_engine_get_rule_count());
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json_str;
+}
+
+static char *handle_set_rules(cJSON *params)
+{
+    cJSON *root = cJSON_CreateObject();
+
+    if (params == NULL) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Missing params");
+        char *json_str = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return json_str;
+    }
+
+    cJSON *text_obj = cJSON_GetObjectItem(params, "text");
+    if (!cJSON_IsString(text_obj)) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Missing 'text' field");
+        char *json_str = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return json_str;
+    }
+
+    esp_err_t ret = rules_engine_load_text(text_obj->valuestring);
+    if (ret == ESP_OK) {
+        rules_engine_save();
+        cJSON_AddStringToObject(root, "status", "ok");
+        cJSON_AddNumberToObject(root, "rule_count", rules_engine_get_rule_count());
+    } else {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", rules_engine_get_parse_error());
+    }
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json_str;
+}
+
+static char *handle_set_rules_var(cJSON *params)
+{
+    cJSON *root = cJSON_CreateObject();
+
+    if (params == NULL) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Missing params");
+        char *json_str = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return json_str;
+    }
+
+    cJSON *index_obj = cJSON_GetObjectItem(params, "index");
+    cJSON *value_obj = cJSON_GetObjectItem(params, "value");
+    if (!cJSON_IsNumber(index_obj) || !cJSON_IsNumber(value_obj)) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Missing index/value");
+        char *json_str = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return json_str;
+    }
+
+    int index = index_obj->valueint;
+    float value = (float)value_obj->valuedouble;
+
+    if (index < 0 || index >= MAX_RULE_VARIABLES) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Invalid variable index");
+        char *json_str = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return json_str;
+    }
+
+    rules_engine_set_var((uint8_t)index, value);
+    rules_engine_save();
+
+    cJSON_AddStringToObject(root, "status", "ok");
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json_str;
+}
+
+/* ============================================================================
  * Main Command Router
  * ============================================================================ */
 
@@ -995,6 +1109,12 @@ char *ble_handlers_process_command(const char *json_str, size_t len)
         response = handle_configure_sensor_thresholds(params);
     } else if (strcmp(cmd, "link_sensor_devices") == 0) {
         response = handle_link_sensor_devices(params);
+    } else if (strcmp(cmd, "get_rules") == 0) {
+        response = handle_get_rules(params);
+    } else if (strcmp(cmd, "set_rules") == 0) {
+        response = handle_set_rules(params);
+    } else if (strcmp(cmd, "set_rules_var") == 0) {
+        response = handle_set_rules_var(params);
     } else {
         cJSON *error = cJSON_CreateObject();
         cJSON_AddStringToObject(error, "status", "error");

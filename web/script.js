@@ -57,6 +57,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadStatus();
     loadDevices();
     loadGlobalConfig();
+    loadRules();
     startClock();
 
     // Refresh data periodically (only for WiFi mode)
@@ -447,6 +448,18 @@ function endpointToCommand(endpoint, body) {
             cmd: 'factory_reset',
             params: {}
         };
+    }
+
+    if (endpoint === '/api/rules') {
+        if (body) {
+            return { cmd: 'set_rules', params: body };
+        } else {
+            return { cmd: 'get_rules', params: {} };
+        }
+    }
+
+    if (endpoint === '/api/rules/var') {
+        return { cmd: 'set_rules_var', params: body };
     }
 
     return null;
@@ -1182,6 +1195,136 @@ function getTimePairs() {
     });
 
     return pairs;
+}
+
+// ============================================================================
+// Rules Engine Functions
+// ============================================================================
+
+let rulesData = null;
+
+function toggleRulesEditor() {
+    const section = document.getElementById('rules-editor-section');
+    const btn = document.getElementById('rules-toggle-btn');
+    if (section.classList.contains('hidden')) {
+        section.classList.remove('hidden');
+        btn.textContent = 'Bezaras';
+        loadRules();
+    } else {
+        section.classList.add('hidden');
+        btn.textContent = 'Szerkesztes';
+    }
+}
+
+async function loadRules() {
+    try {
+        const data = await apiRequest('/api/rules');
+        rulesData = data;
+
+        // Update editor
+        const editor = document.getElementById('rules-editor');
+        if (editor && data.text !== undefined) {
+            editor.value = data.text;
+        }
+
+        // Update status
+        const countEl = document.getElementById('rules-count');
+        if (countEl) {
+            countEl.textContent = (data.rule_count || 0) + ' szabaly betoltve';
+        }
+
+        renderRulesState(data);
+    } catch (error) {
+        console.error('Rules load error:', error);
+    }
+}
+
+async function saveRules() {
+    const editor = document.getElementById('rules-editor');
+    const statusEl = document.getElementById('rules-save-status');
+
+    try {
+        statusEl.textContent = 'Mentes...';
+        statusEl.className = '';
+
+        const data = await apiRequest('/api/rules', 'POST', { text: editor.value });
+
+        if (data.ok) {
+            statusEl.textContent = (data.rule_count || 0) + ' szabaly mentve';
+            statusEl.className = 'rules-status-ok';
+            document.getElementById('rules-count').textContent = (data.rule_count || 0) + ' szabaly betoltve';
+            showToast('Szabalyok mentve');
+            // Reload to get updated state
+            setTimeout(loadRules, 500);
+        } else {
+            statusEl.textContent = data.error || 'Parse hiba';
+            statusEl.className = 'rules-status-error';
+            showToast(data.error || 'Szabaly hiba', true);
+        }
+    } catch (error) {
+        console.error('Rules save error:', error);
+        statusEl.textContent = 'Kapcsolati hiba';
+        statusEl.className = 'rules-status-error';
+        showToast('Kapcsolati hiba', true);
+    }
+}
+
+function renderRulesState(data) {
+    if (!data) return;
+
+    // Render variables
+    const varsContainer = document.getElementById('rules-vars-list');
+    if (varsContainer && data.variables) {
+        const hasAnyVar = data.variables.some(v => v !== 0);
+        if (hasAnyVar || (data.rule_count && data.rule_count > 0)) {
+            varsContainer.innerHTML = data.variables.map((val, i) =>
+                `<div class="rules-card rules-var-card">
+                    <span class="rules-card-name">var${i+1}</span>
+                    <span class="rules-card-value">${val}</span>
+                    <button onclick="editRulesVar(${i})" class="btn btn-secondary btn-tiny">&#9998;</button>
+                </div>`
+            ).join('');
+        } else {
+            varsContainer.innerHTML = '<span class="hint">Nincs aktiv valtozo</span>';
+        }
+    }
+
+    // Render timers
+    const timersContainer = document.getElementById('rules-timers-list');
+    if (timersContainer && data.timers) {
+        const activeTimers = data.timers.filter(t => t.active);
+        if (activeTimers.length > 0) {
+            timersContainer.innerHTML = activeTimers.map(t =>
+                `<div class="rules-card rules-timer-card">
+                    <span class="rules-card-name">timer ${t.id}</span>
+                    <span class="rules-card-value">${t.remaining} mp</span>
+                    <span class="rules-card-status active">Aktiv</span>
+                </div>`
+            ).join('');
+        } else {
+            timersContainer.innerHTML = '<span class="hint">Nincs aktiv timer</span>';
+        }
+    }
+}
+
+async function editRulesVar(index) {
+    const newVal = prompt('var' + (index+1) + ' uj erteke:', rulesData ? rulesData.variables[index] : 0);
+    if (newVal === null) return;
+
+    const val = parseFloat(newVal);
+    if (isNaN(val)) {
+        showToast('Ervenytelen szam', true);
+        return;
+    }
+
+    try {
+        await apiRequest('/api/rules/var', 'POST', { index: index, value: val });
+        showToast('var' + (index+1) + ' = ' + val);
+        loadRules();
+    } catch (error) {
+        console.error('Set var error:', error);
+        showToast('Hiba', true);
+    }
 }
 
 // ============================================================================
