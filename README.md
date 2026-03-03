@@ -1,1 +1,1 @@
-ESP32-C6 Zigbee gateway with Wi-Fi softAP and BLE control, event-driven rules engine, thermostat logic, XKC water sensor, and capacitive level sensing.
+ESP32-C6 Zigbee coordinator with standalone ESP32, Wi-Fi softAP and BLE control. Capable of connecting Zigbee temperature and humidity sensors and controlling HA_ON_OFF_LIGHT actuators.
