@@ -149,6 +149,24 @@ esp_err_t nvs_save_rules_vars(const float *vars, uint8_t count);
  */
 esp_err_t nvs_load_rules_vars(float *vars, uint8_t count);
 
+/**
+ * @brief Save rules variable config (persist mask + defaults) to NVS
+ * @param persist_mask Bitmask: bit i = 1 means var[i] is persistent
+ * @param defaults Array of default values for non-persistent variables
+ * @param count Number of variables
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_save_rules_var_config(uint8_t persist_mask, const float *defaults, uint8_t count);
+
+/**
+ * @brief Load rules variable config from NVS
+ * @param persist_mask Output bitmask
+ * @param defaults Output array of default values
+ * @param count Number of variables
+ * @return ESP_OK on success, ESP_ERR_NVS_NOT_FOUND if not stored yet
+ */
+esp_err_t nvs_load_rules_var_config(uint8_t *persist_mask, float *defaults, uint8_t count);
+
 #ifdef __cplusplus
 }
 #endif

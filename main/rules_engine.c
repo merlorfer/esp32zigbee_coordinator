@@ -29,6 +29,8 @@ static rule_t s_rules[MAX_RULES];
 static uint8_t s_rule_count = 0;
 
 static float s_variables[MAX_RULE_VARIABLES];
+static bool  s_var_persist[MAX_RULE_VARIABLES];   // default: true
+static float s_var_defaults[MAX_RULE_VARIABLES];  // default: 0.0
 static rule_timer_t s_timers[MAX_RULE_TIMERS];
 static float s_sensor_values[MAX_DEVICES];
 
@@ -890,6 +892,23 @@ esp_err_t rules_engine_init(void)
     s_boot_time = (uint32_t)time(NULL);
     s_last_time_tick = 0xFFFF;
 
+    // Initialize var config defaults (all persistent, default=0)
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        s_var_persist[i] = true;
+        s_var_defaults[i] = 0.0f;
+    }
+
+    // Load var config from NVS (persist_mask + defaults)
+    uint8_t persist_mask = 0xFF;
+    float loaded_defaults[MAX_RULE_VARIABLES];
+    memset(loaded_defaults, 0, sizeof(loaded_defaults));
+    if (nvs_load_rules_var_config(&persist_mask, loaded_defaults, MAX_RULE_VARIABLES) == ESP_OK) {
+        for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+            s_var_persist[i] = (persist_mask >> i) & 0x01;
+            s_var_defaults[i] = loaded_defaults[i];
+        }
+    }
+
     // Load rules text from NVS
     size_t len = MAX_RULES_TEXT_SIZE;
     if (nvs_load_rules_text(s_rules_text, &len) == ESP_OK && len > 0) {
@@ -904,6 +923,13 @@ esp_err_t rules_engine_init(void)
 
     // Load variables from NVS
     nvs_load_rules_vars(s_variables, MAX_RULE_VARIABLES);
+
+    // Apply defaults for non-persistent variables
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        if (!s_var_persist[i]) {
+            s_variables[i] = s_var_defaults[i];
+        }
+    }
 
     // Initialize sensor values from current device readings
     uint8_t count = device_manager_get_count();
@@ -959,7 +985,13 @@ esp_err_t rules_engine_save(void)
         return ret;
     }
 
-    ret = nvs_save_rules_vars(s_variables, MAX_RULE_VARIABLES);
+    // For non-persistent variables, save the default value instead of current value
+    float vars_to_save[MAX_RULE_VARIABLES];
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        vars_to_save[i] = s_var_persist[i] ? s_variables[i] : s_var_defaults[i];
+    }
+
+    ret = nvs_save_rules_vars(vars_to_save, MAX_RULE_VARIABLES);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Failed to save rules variables to NVS");
     }
@@ -1057,4 +1089,34 @@ void rules_engine_get_timer_state(uint8_t index, bool *active, int32_t *remainin
 const char* rules_engine_get_parse_error(void)
 {
     return s_parse_error;
+}
+
+void rules_engine_set_var_config(uint8_t index, bool persist, float default_value)
+{
+    if (index >= MAX_RULE_VARIABLES) return;
+    s_var_persist[index] = persist;
+    s_var_defaults[index] = default_value;
+    ESP_LOGI(TAG, "var%d config: persist=%d default=%.2f", index + 1, persist, default_value);
+}
+
+void rules_engine_get_var_config(uint8_t index, bool *persist, float *default_value)
+{
+    if (index >= MAX_RULE_VARIABLES) {
+        if (persist) *persist = true;
+        if (default_value) *default_value = 0.0f;
+        return;
+    }
+    if (persist) *persist = s_var_persist[index];
+    if (default_value) *default_value = s_var_defaults[index];
+}
+
+esp_err_t rules_engine_save_var_config(void)
+{
+    uint8_t persist_mask = 0;
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        if (s_var_persist[i]) {
+            persist_mask |= (1 << i);
+        }
+    }
+    return nvs_save_rules_var_config(persist_mask, s_var_defaults, MAX_RULE_VARIABLES);
 }

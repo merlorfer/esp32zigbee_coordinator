@@ -945,6 +945,19 @@ static char *handle_get_rules(cJSON *params)
     }
     cJSON_AddItemToObject(root, "variables", vars);
 
+    // Variable config (persist + default)
+    cJSON *var_config = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        bool persist;
+        float def_val;
+        rules_engine_get_var_config((uint8_t)i, &persist, &def_val);
+        cJSON *vc = cJSON_CreateObject();
+        cJSON_AddBoolToObject(vc, "persist", persist);
+        cJSON_AddNumberToObject(vc, "default", def_val);
+        cJSON_AddItemToArray(var_config, vc);
+    }
+    cJSON_AddItemToObject(root, "var_config", var_config);
+
     cJSON *timers = cJSON_CreateArray();
     for (int i = 0; i < MAX_RULE_TIMERS; i++) {
         bool active;
@@ -1042,6 +1055,50 @@ static char *handle_set_rules_var(cJSON *params)
     return json_str;
 }
 
+static char *handle_set_rules_varconfig(cJSON *params)
+{
+    cJSON *root = cJSON_CreateObject();
+
+    if (params == NULL) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Missing params");
+        char *json_str = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return json_str;
+    }
+
+    cJSON *index_obj = cJSON_GetObjectItem(params, "index");
+    cJSON *persist_obj = cJSON_GetObjectItem(params, "persist");
+    cJSON *default_obj = cJSON_GetObjectItem(params, "default_value");
+    if (!cJSON_IsNumber(index_obj) || !cJSON_IsBool(persist_obj) || !cJSON_IsNumber(default_obj)) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Missing index/persist/default_value");
+        char *json_str = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return json_str;
+    }
+
+    int index = index_obj->valueint;
+    bool persist = cJSON_IsTrue(persist_obj);
+    float def_val = (float)default_obj->valuedouble;
+
+    if (index < 0 || index >= MAX_RULE_VARIABLES) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Invalid variable index");
+        char *json_str = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return json_str;
+    }
+
+    rules_engine_set_var_config((uint8_t)index, persist, def_val);
+    rules_engine_save_var_config();
+
+    cJSON_AddStringToObject(root, "status", "ok");
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json_str;
+}
+
 /* ============================================================================
  * Main Command Router
  * ============================================================================ */
@@ -1115,6 +1172,8 @@ char *ble_handlers_process_command(const char *json_str, size_t len)
         response = handle_set_rules(params);
     } else if (strcmp(cmd, "set_rules_var") == 0) {
         response = handle_set_rules_var(params);
+    } else if (strcmp(cmd, "set_rules_varconfig") == 0) {
+        response = handle_set_rules_varconfig(params);
     } else {
         cJSON *error = cJSON_CreateObject();
         cJSON_AddStringToObject(error, "status", "error");

@@ -960,6 +960,19 @@ static esp_err_t api_rules_get_handler(httpd_req_t *req)
     }
     cJSON_AddItemToObject(root, "variables", vars);
 
+    // Variable config (persist + default)
+    cJSON *var_config = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        bool persist;
+        float def_val;
+        rules_engine_get_var_config((uint8_t)i, &persist, &def_val);
+        cJSON *vc = cJSON_CreateObject();
+        cJSON_AddBoolToObject(vc, "persist", persist);
+        cJSON_AddNumberToObject(vc, "default", def_val);
+        cJSON_AddItemToArray(var_config, vc);
+    }
+    cJSON_AddItemToObject(root, "var_config", var_config);
+
     // Timers
     cJSON *timers = cJSON_CreateArray();
     for (int i = 0; i < MAX_RULE_TIMERS; i++) {
@@ -1096,6 +1109,56 @@ static esp_err_t api_rules_var_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t api_rules_varconfig_post_handler(httpd_req_t *req)
+{
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *index_obj = cJSON_GetObjectItem(root, "index");
+    cJSON *persist_obj = cJSON_GetObjectItem(root, "persist");
+    cJSON *default_obj = cJSON_GetObjectItem(root, "default_value");
+    if (!cJSON_IsNumber(index_obj) || !cJSON_IsBool(persist_obj) || !cJSON_IsNumber(default_obj)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing index/persist/default_value");
+        return ESP_FAIL;
+    }
+
+    int index = index_obj->valueint;
+    bool persist = cJSON_IsTrue(persist_obj);
+    float def_val = (float)default_obj->valuedouble;
+    cJSON_Delete(root);
+
+    if (index < 0 || index >= MAX_RULE_VARIABLES) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid variable index");
+        return ESP_FAIL;
+    }
+
+    rules_engine_set_var_config((uint8_t)index, persist, def_val);
+    rules_engine_save_var_config();
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", true);
+
+    char *json_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(response);
+    return ESP_OK;
+}
+
 // ============================================================================
 // HTTP Server Setup
 // ============================================================================
@@ -1104,7 +1167,7 @@ static esp_err_t start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 28;  // Increased for PWA files + rules API
+    config.max_uri_handlers = 29;  // Increased for PWA files + rules API
 
     if (httpd_start(&s_server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -1268,6 +1331,13 @@ static esp_err_t start_webserver(void)
         .handler = api_rules_var_post_handler
     };
     httpd_register_uri_handler(s_server, &api_rules_var);
+
+    httpd_uri_t api_rules_varconfig = {
+        .uri = "/api/rules/varconfig",
+        .method = HTTP_POST,
+        .handler = api_rules_varconfig_post_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_varconfig);
 
     httpd_uri_t api_factory_reset = {
         .uri = "/api/factory-reset",

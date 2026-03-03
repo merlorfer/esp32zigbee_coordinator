@@ -462,6 +462,10 @@ function endpointToCommand(endpoint, body) {
         return { cmd: 'set_rules_var', params: body };
     }
 
+    if (endpoint === '/api/rules/varconfig') {
+        return { cmd: 'set_rules_varconfig', params: body };
+    }
+
     return null;
 }
 
@@ -1277,13 +1281,23 @@ function renderRulesState(data) {
     if (varsContainer && data.variables) {
         const hasAnyVar = data.variables.some(v => v !== 0);
         if (hasAnyVar || (data.rule_count && data.rule_count > 0)) {
-            varsContainer.innerHTML = data.variables.map((val, i) =>
-                `<div class="rules-card rules-var-card">
+            varsContainer.innerHTML = data.variables.map((val, i) => {
+                let persistIcon = '';
+                if (data.var_config && data.var_config[i] !== undefined) {
+                    const cfg = data.var_config[i];
+                    if (cfg.persist) {
+                        persistIcon = ' <span title="Persistent">&#128190;</span>';
+                    } else {
+                        persistIcon = ` <span title="Non-persistent (default: ${cfg.default})">&#128260;(${cfg.default})</span>`;
+                    }
+                }
+                return `<div class="rules-card rules-var-card">
                     <span class="rules-card-name">var${i+1}</span>
-                    <span class="rules-card-value">${val}</span>
+                    <span class="rules-card-value">${val}${persistIcon}</span>
                     <button onclick="editRulesVar(${i})" class="btn btn-secondary btn-tiny">&#9998;</button>
-                </div>`
-            ).join('');
+                    <button onclick="configRulesVar(${i})" class="btn btn-secondary btn-tiny">&#9881;</button>
+                </div>`;
+            }).join('');
         } else {
             varsContainer.innerHTML = '<span class="hint">Nincs aktiv valtozo</span>';
         }
@@ -1323,6 +1337,40 @@ async function editRulesVar(index) {
         loadRules();
     } catch (error) {
         console.error('Set var error:', error);
+        showToast('Hiba', true);
+    }
+}
+
+async function configRulesVar(index) {
+    const cfg = rulesData && rulesData.var_config ? rulesData.var_config[index] : { persist: true, default: 0 };
+    const persistChoice = confirm(
+        'var' + (index+1) + ' konfig\n\n' +
+        'Jelenlegi: ' + (cfg.persist ? 'Persistent (NVS-ben marad)' : 'Non-persistent (alapertek: ' + cfg.default + ')') + '\n\n' +
+        'OK = Persistent (NVS-ben tarolodik)\n' +
+        'Megse = Non-persistent (alapertekre all boot-kor)'
+    );
+
+    let defaultVal = cfg.default;
+    if (!persistChoice) {
+        const defInput = prompt('Alapertek (boot-kor ezt kapja var' + (index+1) + '):', cfg.default);
+        if (defInput === null) return;
+        defaultVal = parseFloat(defInput);
+        if (isNaN(defaultVal)) {
+            showToast('Ervenytelen szam', true);
+            return;
+        }
+    }
+
+    try {
+        await apiRequest('/api/rules/varconfig', 'POST', {
+            index: index,
+            persist: persistChoice,
+            default_value: defaultVal
+        });
+        showToast('var' + (index+1) + ' konfig mentve');
+        loadRules();
+    } catch (error) {
+        console.error('Config var error:', error);
         showToast('Hiba', true);
     }
 }

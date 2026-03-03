@@ -276,6 +276,53 @@ on boot do
 endon
 ```
 
+## Pelda: if / else hasznalata
+
+Az `else` ag akkor fut le, ha az `if` feltetel **hamis**.
+
+```
+// Homerseklet alapu futes vezerlese:
+// - Ha hideg ES megfelelo napszak -> futes be
+// - Egyebkent -> futes ki
+on Temperature do
+  if [Temperature] < 18 and [hour] >= 6
+    on Heater
+  else
+    off Heater
+  endif
+endon
+```
+
+Masik pelda: valtozo beallitasa if/else-szel, majd a valtozo
+triggereli a tenyleges eszkozparancsot:
+
+```
+// 1. Szabaly: valtozo beallitasa a feltetelek alapjan
+on Temperature do
+  if [Temperature] < 20 and [hour] >= 5 and [hour] < 23
+    set var1 1    // "futesi szezon" aktiv
+  else
+    set var1 0    // "futesi szezon" inaktiv
+  endif
+endon
+
+// 2. Szabaly: eszkoz vezerlese a valtozo alapjan
+on var1 do
+  if [var1] = 1
+    on Heater
+  else
+    off Heater
+  endif
+endon
+```
+
+**Hasznos minta**: Az elso szabaly "dontesi logika" (szamitja az allapotot),
+a masodik "vegrehajtas" (a tenyleges kapcsolast csinalja). Igy a logika
+es a vezErles szet van valasztva, es a valtozo allapotat mas szabalyok
+is lathatjak `[var1]` hivatkozassal.
+
+---
+
 ## Pelda: Timer dinamikus idovel
 
 ```

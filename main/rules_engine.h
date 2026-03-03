@@ -110,6 +110,11 @@ typedef struct {
     int32_t remaining_seconds;
 } rule_timer_t;
 
+typedef struct {
+    bool  persist;
+    float default_value;
+} rule_var_config_t;
+
 /* ============================================================================
  * API Functions
  * ============================================================================ */
@@ -132,6 +137,10 @@ void rules_engine_timer_tick(void);
 uint8_t rules_engine_get_rule_count(void);
 void rules_engine_get_timer_state(uint8_t index, bool *active, int32_t *remaining);
 const char* rules_engine_get_parse_error(void);
+
+void rules_engine_set_var_config(uint8_t index, bool persist, float default_value);
+void rules_engine_get_var_config(uint8_t index, bool *persist, float *default_value);
+esp_err_t rules_engine_save_var_config(void);
 
 #ifdef __cplusplus
 }
