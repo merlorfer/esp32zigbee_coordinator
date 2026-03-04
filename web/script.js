@@ -466,6 +466,10 @@ function endpointToCommand(endpoint, body) {
         return { cmd: 'set_rules_varconfig', params: body };
     }
 
+    if (endpoint === '/api/rules/reset') {
+        return { cmd: 'reset_rules', params: {} };
+    }
+
     return null;
 }
 
@@ -1279,28 +1283,23 @@ function renderRulesState(data) {
     // Render variables
     const varsContainer = document.getElementById('rules-vars-list');
     if (varsContainer && data.variables) {
-        const hasAnyVar = data.variables.some(v => v !== 0);
-        if (hasAnyVar || (data.rule_count && data.rule_count > 0)) {
-            varsContainer.innerHTML = data.variables.map((val, i) => {
-                let persistIcon = '';
-                if (data.var_config && data.var_config[i] !== undefined) {
-                    const cfg = data.var_config[i];
-                    if (cfg.persist) {
-                        persistIcon = ' <span title="Persistent">&#128190;</span>';
-                    } else {
-                        persistIcon = ` <span title="Non-persistent (default: ${cfg.default})">&#128260;(${cfg.default})</span>`;
-                    }
+        varsContainer.innerHTML = data.variables.map((val, i) => {
+            let persistIcon = '';
+            if (data.var_config && data.var_config[i] !== undefined) {
+                const cfg = data.var_config[i];
+                if (cfg.persist) {
+                    persistIcon = ' <span title="Persistent">&#128190;</span>';
+                } else {
+                    persistIcon = ` <span title="Non-persistent (default: ${cfg.default})">&#128260;(${cfg.default})</span>`;
                 }
-                return `<div class="rules-card rules-var-card">
+            }
+            return `<div class="rules-card rules-var-card">
                     <span class="rules-card-name">var${i+1}</span>
                     <span class="rules-card-value">${val}${persistIcon}</span>
                     <button onclick="editRulesVar(${i})" class="btn btn-secondary btn-tiny">&#9998;</button>
                     <button onclick="configRulesVar(${i})" class="btn btn-secondary btn-tiny">&#9881;</button>
                 </div>`;
-            }).join('');
-        } else {
-            varsContainer.innerHTML = '<span class="hint">Nincs aktiv valtozo</span>';
-        }
+        }).join('');
     }
 
     // Render timers
@@ -1322,7 +1321,17 @@ function renderRulesState(data) {
 }
 
 async function editRulesVar(index) {
-    const newVal = prompt('var' + (index+1) + ' uj erteke:', rulesData ? rulesData.variables[index] : 0);
+    const cfg = rulesData && rulesData.var_config ? rulesData.var_config[index] : { persist: true, default: 0 };
+    const isPersist = cfg.persist;
+
+    const label = isPersist
+        ? 'var' + (index+1) + ' uj erteke:'
+        : 'var' + (index+1) + ' alaperteke (boot utan erre all):';
+    const current = isPersist
+        ? (rulesData ? rulesData.variables[index] : 0)
+        : cfg.default;
+
+    const newVal = prompt(label, current);
     if (newVal === null) return;
 
     const val = parseFloat(newVal);
@@ -1332,8 +1341,13 @@ async function editRulesVar(index) {
     }
 
     try {
-        await apiRequest('/api/rules/var', 'POST', { index: index, value: val });
-        showToast('var' + (index+1) + ' = ' + val);
+        if (isPersist) {
+            await apiRequest('/api/rules/var', 'POST', { index: index, value: val });
+            showToast('var' + (index+1) + ' = ' + val);
+        } else {
+            await apiRequest('/api/rules/varconfig', 'POST', { index: index, persist: false, default_value: val });
+            showToast('var' + (index+1) + ' alapertek = ' + val);
+        }
         loadRules();
     } catch (error) {
         console.error('Set var error:', error);
@@ -1371,6 +1385,18 @@ async function configRulesVar(index) {
         loadRules();
     } catch (error) {
         console.error('Config var error:', error);
+        showToast('Hiba', true);
+    }
+}
+
+async function resetRulesEngine() {
+    if (!confirm('Torol minden szabalyt, valtozot es konfigot az NVS-bol?\n\nEz visszaallitja a gyari alapallapotot.')) return;
+    try {
+        await apiRequest('/api/rules/reset', 'POST', {});
+        showToast('Szabalyok NVS torolve');
+        loadRules();
+    } catch (error) {
+        console.error('Rules reset error:', error);
         showToast('Hiba', true);
     }
 }

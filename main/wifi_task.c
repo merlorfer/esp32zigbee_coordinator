@@ -864,9 +864,8 @@ static esp_err_t api_global_config_post_handler(httpd_req_t *req)
 
     device_manager_set_global_config(&config);
 
-    // Handle XKC sensor start/stop if in Zigbee operational mode
-    EventBits_t bits = xEventGroupGetBits(g_event_group);
-    if (bits & EVENT_ZIGBEE_MODE_BIT) {
+    // Handle XKC sensor start/stop (any mode)
+    {
         bool gpio_changed = (config.local_xkc_gpio_lower != old_gpio_lower ||
                             config.local_xkc_gpio_upper != old_gpio_upper);
 
@@ -1147,8 +1146,34 @@ static esp_err_t api_rules_varconfig_post_handler(httpd_req_t *req)
     rules_engine_set_var_config((uint8_t)index, persist, def_val);
     rules_engine_save_var_config();
 
+    // For non-persistent variables, immediately apply the default as the runtime value
+    // so the UI shows the correct value in the current session (not just after reboot)
+    if (!persist) {
+        rules_engine_set_var((uint8_t)index, def_val);
+        rules_engine_save();
+    }
+
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", true);
+
+    char *json_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(response);
+    return ESP_OK;
+}
+
+static esp_err_t api_rules_reset_handler(httpd_req_t *req)
+{
+    esp_err_t ret = rules_engine_reset();
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", ret == ESP_OK);
+    if (ret != ESP_OK) {
+        cJSON_AddStringToObject(response, "error", esp_err_to_name(ret));
+    }
 
     char *json_str = cJSON_Print(response);
     httpd_resp_set_type(req, "application/json");
@@ -1167,7 +1192,7 @@ static esp_err_t start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 29;  // Increased for PWA files + rules API
+    config.max_uri_handlers = 30;  // Increased for PWA files + rules API
 
     if (httpd_start(&s_server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -1338,6 +1363,13 @@ static esp_err_t start_webserver(void)
         .handler = api_rules_varconfig_post_handler
     };
     httpd_register_uri_handler(s_server, &api_rules_varconfig);
+
+    httpd_uri_t api_rules_reset = {
+        .uri = "/api/rules/reset",
+        .method = HTTP_POST,
+        .handler = api_rules_reset_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_reset);
 
     httpd_uri_t api_factory_reset = {
         .uri = "/api/factory-reset",

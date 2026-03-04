@@ -402,6 +402,9 @@ esp_err_t nvs_save_rules_vars(const float *vars, uint8_t count)
     ret = nvs_set_blob(handle, NVS_KEY_RULES_VARS, vars, count * sizeof(float));
     if (ret == ESP_OK) {
         nvs_commit(handle);
+        ESP_LOGI(TAG, "Rules vars saved");
+    } else {
+        ESP_LOGE(TAG, "Failed to save rules vars: %s", esp_err_to_name(ret));
     }
 
     nvs_close(handle);
@@ -490,5 +493,27 @@ esp_err_t nvs_load_rules_var_config(uint8_t *persist_mask, float *defaults, uint
         ret = ESP_ERR_NVS_NOT_FOUND;
     }
 
+    return ret;
+}
+
+esp_err_t nvs_erase_rules(void)
+{
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE_RULES, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = nvs_erase_all(handle);
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Rules NVS erased (factory reset)");
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to erase rules NVS: %s", esp_err_to_name(ret));
+    }
+
+    nvs_close(handle);
     return ret;
 }

@@ -679,9 +679,8 @@ static char *handle_set_global_settings(cJSON *params)
 
     device_manager_set_global_config(&config);
 
-    // Handle XKC sensor start/stop if in Zigbee operational mode
-    EventBits_t bits = xEventGroupGetBits(g_event_group);
-    if (bits & EVENT_ZIGBEE_MODE_BIT) {
+    // Handle XKC sensor start/stop (any mode)
+    {
         bool gpio_changed = (config.local_xkc_gpio_lower != old_gpio_lower ||
                             config.local_xkc_gpio_upper != old_gpio_upper);
 
@@ -1093,6 +1092,12 @@ static char *handle_set_rules_varconfig(cJSON *params)
     rules_engine_set_var_config((uint8_t)index, persist, def_val);
     rules_engine_save_var_config();
 
+    // For non-persistent variables, immediately apply the default as the runtime value
+    if (!persist) {
+        rules_engine_set_var((uint8_t)index, def_val);
+        rules_engine_save();
+    }
+
     cJSON_AddStringToObject(root, "status", "ok");
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -1174,6 +1179,12 @@ char *ble_handlers_process_command(const char *json_str, size_t len)
         response = handle_set_rules_var(params);
     } else if (strcmp(cmd, "set_rules_varconfig") == 0) {
         response = handle_set_rules_varconfig(params);
+    } else if (strcmp(cmd, "reset_rules") == 0) {
+        cJSON *root = cJSON_CreateObject();
+        esp_err_t ret = rules_engine_reset();
+        cJSON_AddStringToObject(root, "status", ret == ESP_OK ? "ok" : "error");
+        response = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
     } else {
         cJSON *error = cJSON_CreateObject();
         cJSON_AddStringToObject(error, "status", "error");

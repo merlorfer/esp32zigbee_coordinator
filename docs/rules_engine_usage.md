@@ -111,6 +111,9 @@ set var2 [var1] + [var3]       // Ket valtozo osszege
 **Valtozok:** `var1`-tol `var8`-ig. Mindegyik float tipusu.
 Valtozo ertekmodositaskor `on var<N> do` esemeny triggerel.
 
+**Persist konfiguracio:** Minden valtozo konfiguralhato, hogy ujrainditas utan
+megorizze az erteket, vagy alapertekre alljon vissza (lasd lent).
+
 ### Komment
 
 ```
@@ -337,10 +340,73 @@ vagy egy masik szaballyal), es az adja meg a timer idotartamat masodpercben.
 
 ---
 
+## Valtozo persist konfiguracio
+
+Minden valtozo (var1..var8) konfiguralhato, hogy ujrainditas utan hogyan viselkedjen.
+
+### Persist modok
+
+| Mod | Ikon | Ujrainditas utan |
+|-----|------|-----------------|
+| **Persist** (alapert.) | 💾 | Az utolso erteket tartja meg (NVS-bol toltodik) |
+| **Nem persist** | 🔄 | Az elore beallitott alapertekre all vissza |
+
+### Konfiguracio a web UI-bol
+
+A "Szabalyok" szekcioban minden valtozo karten a **⚙** gombbal:
+1. Megadhato, hogy **persist** vagy **nem persist** legyen a valtozo
+2. Nem persist eseten megadhato az **alapertek** (ezt kapja indulaskor)
+
+### Tipikus hasznalati esetek
+
+**Persist valtozok** (alapertelmezett) — beallitasok, amik megmaradnak:
+```
+var4 = 300   // Ontozesi idotartam (mp) — legyen 300 mp alapbol
+             // Felhasznalo atat allitja, meg kell maradnia
+```
+
+**Nem persist valtozok** — allapotok, amik resetelodjenek:
+```
+var1 = 0    // "Pump fut" flag — indulaskor legyen 0 (nem fut)
+var2 = 0    // Szamlalo — indulaskor nullazodjon
+```
+
+### Pelda: Ontozesi idotartam konfiguralhato valtozoval
+
+```
+// var4 = ontozesi idotartam masodpercben (persist, alapert: 300)
+// var5 = pump allapot (nem persist, alapert: 0)
+
+on WaterLevel do
+  if [WaterLevel] < 1
+    on Pump
+    set var5 1
+    timerSet 2 [var4]   // var4 adja meg a pump futasi idot
+  endif
+  if [WaterLevel] >= 1
+    timerCancel 2
+    off Pump
+    set var5 0
+  endif
+endon
+
+on timer 2 do
+  off Pump
+  set var5 0
+endon
+```
+
+A `var4` erteket a web UI-bol lehet modositani, es NVS-ben megmarad.
+A `var5` minden indulasko 0-ra all (pump nem fut allapot).
+
+---
+
 ## Hasznos tudnivalok
 
 - A szabalyok az NVS-ben tarolodnak, ujrainditas utan megmaradnak
-- A valtozok (var1..var8) szinten NVS-ben persistalodnak
+- A valtozok (var1..var8) alapertelmezetten persist (NVS-bol toltodnak)
+- A valtozo persist viselkedese a web UI ⚙ gombjaval konfiguralhato
+- Nem persist valtozok indulaskor a beallitott alaperteket kapjak
 - A timerek NEM persistalodnak (ujrainditaskor nullazodnak)
 - A `boot` esemeny minden Zigbee mod inditaskor lefut
 - A szenzor triggerek csak akkor futnak, amikor uj meres erkezik

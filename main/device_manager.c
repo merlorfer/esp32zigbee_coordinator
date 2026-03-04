@@ -116,7 +116,7 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
         strncpy(dev->model, model, MAX_MODEL_LEN - 1);
     }
 
-    snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "Device %d", s_device_count + 1);
+    snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "Device%d", s_device_count + 1);
 
     s_device_count++;
     s_global_config.device_count = s_device_count;
@@ -503,7 +503,7 @@ esp_err_t device_manager_add_sensor(uint64_t ieee_addr, uint8_t endpoint,
 
     const sensor_type_info_t *type_info = sensor_type_get_info(device_type);
     const char *type_str = type_info ? type_info->display_name : "Unknown";
-    snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "%s Sensor %d", type_str, s_device_count + 1);
+    snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "%sSensor%d", type_str, s_device_count + 1);
 
     s_device_count++;
     s_global_config.device_count = s_device_count;

@@ -5,6 +5,9 @@ sdkconfig.old
 *.elf
 *.map
 
+# Debug info
+info/
+
 # IDE
 .vscode/
 .idea/

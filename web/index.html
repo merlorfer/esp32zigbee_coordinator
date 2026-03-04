@@ -144,11 +144,16 @@
             <section class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                     <h2 style="margin: 0; padding: 0; border: none;">Szabalyok</h2>
-                    <button onclick="toggleRulesEditor()" class="btn btn-secondary btn-small" id="rules-toggle-btn">
-                        Szerkesztes
-                    </button>
+                    <div style="display: flex; gap: 8px;">
+                        <button onclick="resetRulesEngine()" class="btn btn-danger btn-small" title="Torol minden szabalyt es valtozo-konfigot az NVS-bol">
+                            Reset
+                        </button>
+                        <button onclick="toggleRulesEditor()" class="btn btn-secondary btn-small" id="rules-toggle-btn">
+                            Szerkesztes
+                        </button>
+                    </div>
                 </div>
-                <p class="hint">ESPEasy-szeru szabalyok. Eszkozneveknel ne hasznaljon szokozoket (hasznaljon _ jelet).</p>
+                <p class="hint">Szabalyok. Eszkozneveknel ne hasznaljon szokozoket (hasznaljon _ jelet).</p>
 
                 <div id="rules-status-bar" class="rules-status-bar">
                     <span id="rules-count">0 szabaly betoltve</span>

@@ -167,6 +167,12 @@ esp_err_t nvs_save_rules_var_config(uint8_t persist_mask, const float *defaults,
  */
 esp_err_t nvs_load_rules_var_config(uint8_t *persist_mask, float *defaults, uint8_t count);
 
+/**
+ * @brief Erase all rules data from NVS (factory reset)
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_erase_rules(void);
+
 #ifdef __cplusplus
 }
 #endif

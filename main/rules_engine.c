@@ -931,6 +931,14 @@ esp_err_t rules_engine_init(void)
         }
     }
 
+    // Log initial variable state for diagnostics
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        if (s_variables[i] != 0.0f || !s_var_persist[i]) {
+            ESP_LOGI(TAG, "init var%d: persist=%d default=%.2f value=%.2f",
+                     i + 1, s_var_persist[i], s_var_defaults[i], s_variables[i]);
+        }
+    }
+
     // Initialize sensor values from current device readings
     uint8_t count = device_manager_get_count();
     for (uint8_t i = 0; i < count && i < MAX_DEVICES; i++) {
@@ -1118,5 +1126,31 @@ esp_err_t rules_engine_save_var_config(void)
             persist_mask |= (1 << i);
         }
     }
+    ESP_LOGI(TAG, "save_var_config: persist=[%d%d%d%d%d%d%d%d] mask=0x%02X",
+             s_var_persist[0], s_var_persist[1], s_var_persist[2], s_var_persist[3],
+             s_var_persist[4], s_var_persist[5], s_var_persist[6], s_var_persist[7],
+             persist_mask);
     return nvs_save_rules_var_config(persist_mask, s_var_defaults, MAX_RULE_VARIABLES);
+}
+
+esp_err_t rules_engine_reset(void)
+{
+    // Clear in-memory state
+    memset(s_rules, 0, sizeof(s_rules));
+    memset(s_variables, 0, sizeof(s_variables));
+    memset(s_timers, 0, sizeof(s_timers));
+    s_rules_text[0] = '\0';
+    s_parse_error[0] = '\0';
+    s_rule_count = 0;
+
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        s_var_persist[i] = true;
+        s_var_defaults[i] = 0.0f;
+    }
+
+    esp_err_t ret = nvs_erase_rules();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Rules engine reset to factory defaults");
+    }
+    return ret;
 }

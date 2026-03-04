@@ -693,6 +693,7 @@ static void scheduler_task(void *pvParameters)
 
 esp_err_t scheduler_task_init(void)
 {
+    rules_engine_init();
     ESP_LOGI(TAG, "Scheduler task initialized");
     return ESP_OK;
 }

@@ -141,6 +141,7 @@ const char* rules_engine_get_parse_error(void);
 void rules_engine_set_var_config(uint8_t index, bool persist, float default_value);
 void rules_engine_get_var_config(uint8_t index, bool *persist, float *default_value);
 esp_err_t rules_engine_save_var_config(void);
+esp_err_t rules_engine_reset(void);
 
 #ifdef __cplusplus
 }
