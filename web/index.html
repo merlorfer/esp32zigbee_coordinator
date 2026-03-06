@@ -229,6 +229,33 @@ endon
                 <button onclick="factoryReset()" class="btn btn-danger">Gyari alaphelyzetbe allitas</button>
                 <p class="hint warning">Torli az osszes eszkozt es beallitast!</p>
             </section>
+
+            <!-- Log viewer section -->
+            <section class="card" id="logs-section">
+                <h2>Rendszernaplо</h2>
+                <div class="log-tab-bar">
+                    <button class="log-tab-btn active" onclick="showLogTab('live')" id="log-tab-btn-live">Élо napló</button>
+                    <button class="log-tab-btn" onclick="showLogTab('history')" id="log-tab-btn-history">Előzmények</button>
+                </div>
+
+                <!-- Live log tab -->
+                <div id="log-tab-live">
+                    <div id="live-log-box" class="log-box"></div>
+                    <div class="log-controls">
+                        <label><input type="checkbox" id="log-autoscroll" checked> Auto-scroll</label>
+                        <button class="btn btn-secondary btn-small" onclick="clearLiveDisplay()">Kijelző törlése</button>
+                    </div>
+                </div>
+
+                <!-- History tab -->
+                <div id="log-tab-history" class="hidden">
+                    <select id="history-session-select" onchange="loadHistoryContent()">
+                        <option value="">— Session választása —</option>
+                    </select>
+                    <div id="history-log-box" class="log-box"></div>
+                    <button class="btn btn-danger btn-small" onclick="clearLogHistory()" style="margin-top:6px">Előzmények törlése</button>
+                </div>
+            </section>
         </main>
 
         <!-- Device Config Modal -->

@@ -7,6 +7,7 @@
 
 #include "ble_handlers.h"
 #include "ble_task.h"
+#include "log_manager.h"
 #include "device_manager.h"
 #include "sensor_types.h"
 #include "local_xkc_sensor.h"
@@ -18,6 +19,7 @@
 #include "esp_log.h"
 #include "cJSON.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -1104,6 +1106,51 @@ static char *handle_set_rules_varconfig(cJSON *params)
     return json_str;
 }
 
+static char *handle_get_logs_live(cJSON *params)
+{
+    int max_lines = 50;
+    if (params != NULL) {
+        cJSON *n = cJSON_GetObjectItem(params, "lines");
+        if (cJSON_IsNumber(n) && n->valueint > 0) {
+            max_lines = (n->valueint > 100) ? 100 : n->valueint;
+        }
+    }
+
+    char *buf = malloc(LOG_RAM_BUF + 1);
+    if (!buf) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "out of memory");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+    log_manager_get_live(buf, LOG_RAM_BUF + 1);
+
+    // Split into lines, keep last max_lines
+    char *line_ptrs[100];
+    int line_count = 0;
+    char *tok = strtok(buf, "\n");
+    while (tok && line_count < 100) {
+        if (*tok) line_ptrs[line_count++] = tok;
+        tok = strtok(NULL, "\n");
+    }
+    int start = (line_count > max_lines) ? (line_count - max_lines) : 0;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr  = cJSON_CreateArray();
+    for (int i = start; i < line_count; i++) {
+        cJSON_AddItemToArray(arr, cJSON_CreateString(line_ptrs[i]));
+    }
+    cJSON_AddStringToObject(root, "status", "ok");
+    cJSON_AddItemToObject(root, "lines", arr);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    free(buf);
+    return json_str;
+}
+
 /* ============================================================================
  * Main Command Router
  * ============================================================================ */
@@ -1185,6 +1232,8 @@ char *ble_handlers_process_command(const char *json_str, size_t len)
         cJSON_AddStringToObject(root, "status", ret == ESP_OK ? "ok" : "error");
         response = cJSON_PrintUnformatted(root);
         cJSON_Delete(root);
+    } else if (strcmp(cmd, "get_logs_live") == 0) {
+        response = handle_get_logs_live(params);
     } else {
         cJSON *error = cJSON_CreateObject();
         cJSON_AddStringToObject(error, "status", "error");

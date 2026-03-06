@@ -38,6 +38,7 @@ let bleConnected = false;
 // Polling intervals
 let statusInterval = null;
 let devicesInterval = null;
+let logsInterval = null;
 
 // Helper function to check if we should poll via WiFi
 function shouldPollViaWiFi() {
@@ -72,6 +73,10 @@ document.addEventListener('DOMContentLoaded', function() {
             loadDevices();
         }
     }, 10000);
+
+    // Live log polling — apiRequest routes to BLE or WiFi automatically
+    pollLiveLogs();
+    logsInterval = setInterval(pollLiveLogs, 3000);
 });
 
 // ============================================================================
@@ -233,6 +238,7 @@ async function connectBLE() {
             devicesInterval = null;
             console.log('WiFi devices polling stopped');
         }
+        // logsInterval keeps running — apiRequest routes to BLE automatically
 
         console.log('BLE flags set: bleConnected=', bleConnected);
 
@@ -305,6 +311,8 @@ function disconnectBLE() {
         }
     }, 10000);
     console.log('WiFi devices polling restarted');
+
+    // logsInterval already running, no restart needed
 
     showToast('Bluetooth kapcsolat bontva');
 }
@@ -468,6 +476,10 @@ function endpointToCommand(endpoint, body) {
 
     if (endpoint === '/api/rules/reset') {
         return { cmd: 'reset_rules', params: {} };
+    }
+
+    if (endpoint === '/api/logs/live') {
+        return { cmd: 'get_logs_live', params: { lines: 50 } };
     }
 
     return null;
@@ -1443,3 +1455,111 @@ document.getElementById('device-modal').addEventListener('click', function(e) {
         closeModal();
     }
 });
+
+// ============================================================================
+// Log Viewer
+// ============================================================================
+
+function showLogTab(tab) {
+    const live    = document.getElementById('log-tab-live');
+    const history = document.getElementById('log-tab-history');
+    const btnLive = document.getElementById('log-tab-btn-live');
+    const btnHist = document.getElementById('log-tab-btn-history');
+
+    if (tab === 'live') {
+        live.classList.remove('hidden');
+        history.classList.add('hidden');
+        btnLive.classList.add('active');
+        btnHist.classList.remove('active');
+    } else {
+        live.classList.add('hidden');
+        history.classList.remove('hidden');
+        btnLive.classList.remove('active');
+        btnHist.classList.add('active');
+        loadHistorySessions();
+    }
+}
+
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function renderLiveLog(lines) {
+    const box = document.getElementById('live-log-box');
+    if (!box || !lines) return;
+    box.innerHTML = lines.map(line => {
+        const level = line[0] || 'I';
+        const cls = ['E','W','I','D'].includes(level) ? 'log-line-' + level : 'log-line-I';
+        return '<div class="' + cls + '">' + escapeHtml(line) + '</div>';
+    }).join('');
+    if (document.getElementById('log-autoscroll').checked) {
+        box.scrollTop = box.scrollHeight;
+    }
+}
+
+function clearLiveDisplay() {
+    const box = document.getElementById('live-log-box');
+    if (box) box.innerHTML = '';
+}
+
+async function pollLiveLogs() {
+    try {
+        const data = await apiRequest('/api/logs/live');
+        renderLiveLog(data.lines);
+    } catch (e) {
+        // silent - live log polling failure is non-critical
+    }
+}
+
+async function loadHistorySessions() {
+    try {
+        const data = await apiRequest('/api/logs/history');
+        const sel = document.getElementById('history-session-select');
+        sel.innerHTML = '<option value="">— Session választása —</option>' +
+            (data.sessions || []).map(s =>
+                '<option value="' + s.name + '">' + s.name +
+                ' (' + formatBytes(s.size) + ')' +
+                (s.current ? ' ← jelenlegi' : '') + '</option>'
+            ).join('');
+    } catch (e) {
+        console.error('loadHistorySessions error:', e);
+    }
+}
+
+function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    return (bytes / 1024).toFixed(1) + ' KB';
+}
+
+async function loadHistoryContent() {
+    const sel = document.getElementById('history-session-select');
+    const box = document.getElementById('history-log-box');
+    if (!sel || !box || !sel.value) return;
+
+    box.innerHTML = '<div style="color:#888">Betöltés...</div>';
+    try {
+        const resp = await fetch('/api/logs/history?file=' + encodeURIComponent(sel.value));
+        const text = await resp.text();
+        box.innerHTML = '<div class="log-line-I">' + escapeHtml(text).replace(/\n/g, '</div><div class="log-line-I">') + '</div>';
+        box.scrollTop = box.scrollHeight;
+    } catch (e) {
+        box.innerHTML = '<div class="log-line-E">Betöltés sikertelen</div>';
+    }
+}
+
+async function clearLogHistory() {
+    if (!confirm('Biztosan törlöd az összes előzményt?')) return;
+    try {
+        await fetch('/api/logs', { method: 'DELETE' });
+        document.getElementById('history-log-box').innerHTML = '';
+        document.getElementById('history-session-select').innerHTML =
+            '<option value="">— Session választása —</option>';
+        showToast('Napló előzmények törölve');
+    } catch (e) {
+        showToast('Törlés sikertelen', true);
+    }
+}
+

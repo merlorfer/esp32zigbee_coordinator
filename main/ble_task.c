@@ -41,8 +41,10 @@ static void ble_advertise(void);
 
 static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
 {
-    ESP_LOGI(TAG, "GAP event: %d", event->type);
-
+    if (event->type != 13) { // Skip logging for subscribe events to reduce log spam
+        ESP_LOGI(TAG, "GAP event: %d", event->type);
+    }
+    
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         ESP_LOGI(TAG, "BLE connection %s; status=%d",
@@ -282,6 +284,9 @@ esp_err_t ble_task_init(void)
         ESP_LOGE(TAG, "Failed to initialize nimble port; ret=%d", ret);
         return ret;
     }
+
+    // Suppress verbose NimBLE internal logs (GATT notify spam etc.)
+    esp_log_level_set("NimBLE", ESP_LOG_WARN);
 
     // Initialize BLE host configuration
     ble_hs_cfg.reset_cb = ble_on_reset;

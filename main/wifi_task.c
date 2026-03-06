@@ -4,6 +4,7 @@
  */
 
 #include "wifi_task.h"
+#include "log_manager.h"
 #include "device_manager.h"
 #include "sensor_types.h"
 #include "local_xkc_sensor.h"
@@ -19,6 +20,7 @@
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "cJSON.h"
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
@@ -749,6 +751,9 @@ static esp_err_t api_wifi_shutdown_post_handler(httpd_req_t *req)
     free(json_str);
     cJSON_Delete(response);
 
+    // Persist logs before WiFi/HTTP shuts down
+    log_manager_flush();
+
     // Schedule Wi-Fi stop after response is sent
     xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
     xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT);
@@ -1185,6 +1190,97 @@ static esp_err_t api_rules_reset_handler(httpd_req_t *req)
 }
 
 // ============================================================================
+// HTTP Handlers - Log API
+// ============================================================================
+
+static esp_err_t api_logs_live_get_handler(httpd_req_t *req)
+{
+    char *buf = malloc(LOG_RAM_BUF + 1);
+    if (!buf) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    log_manager_get_live(buf, LOG_RAM_BUF + 1);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr  = cJSON_CreateArray();
+
+    // Split into lines, add as JSON array
+    char *line = buf;
+    char *nl;
+    bool truncated = false;
+    int count = 0;
+    while (*line) {
+        nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+        if (*line) {
+            cJSON_AddItemToArray(arr, cJSON_CreateString(line));
+            count++;
+            if (count >= 500) { truncated = true; break; }
+        }
+        if (!nl) break;
+        line = nl + 1;
+    }
+
+    cJSON_AddItemToObject(root, "lines", arr);
+    cJSON_AddBoolToObject(root, "truncated", truncated);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(root);
+    free(buf);
+    return ESP_OK;
+}
+
+static esp_err_t api_logs_history_get_handler(httpd_req_t *req)
+{
+    // Check for ?file=session_N.log query param
+    char file_param[32] = {0};
+    if (httpd_req_get_url_query_len(req) > 0) {
+        char query[64];
+        httpd_req_get_url_query_str(req, query, sizeof(query));
+        httpd_query_key_value(query, "file", file_param, sizeof(file_param));
+    }
+
+    if (file_param[0] != '\0') {
+        // Send specific session file as chunked plain/text
+        return log_manager_get_session(file_param, req);
+    }
+
+    // Return session list as JSON
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr  = cJSON_CreateArray();
+    log_manager_list_sessions(arr);
+    cJSON_AddItemToObject(root, "sessions", arr);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t api_logs_delete_handler(httpd_req_t *req)
+{
+    esp_err_t ret = log_manager_clear();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "success", ret == ESP_OK);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// ============================================================================
 // HTTP Server Setup
 // ============================================================================
 
@@ -1378,6 +1474,27 @@ static esp_err_t start_webserver(void)
     };
     httpd_register_uri_handler(s_server, &api_factory_reset);
 
+    httpd_uri_t api_logs_live = {
+        .uri = "/api/logs/live",
+        .method = HTTP_GET,
+        .handler = api_logs_live_get_handler
+    };
+    httpd_register_uri_handler(s_server, &api_logs_live);
+
+    httpd_uri_t api_logs_history = {
+        .uri = "/api/logs/history",
+        .method = HTTP_GET,
+        .handler = api_logs_history_get_handler
+    };
+    httpd_register_uri_handler(s_server, &api_logs_history);
+
+    httpd_uri_t api_logs_delete = {
+        .uri = "/api/logs",
+        .method = HTTP_DELETE,
+        .handler = api_logs_delete_handler
+    };
+    httpd_register_uri_handler(s_server, &api_logs_delete);
+
     ESP_LOGI(TAG, "HTTP server started");
     return ESP_OK;
 }
@@ -1494,6 +1611,7 @@ esp_err_t wifi_task_start(void)
 
 esp_err_t wifi_task_stop(void)
 {
+    log_manager_flush();
     stop_webserver();
 
     esp_err_t ret = esp_wifi_stop();

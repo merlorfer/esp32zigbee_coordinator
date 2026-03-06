@@ -23,6 +23,7 @@
 #include "zigbee_task.h"
 #include "scheduler_task.h"
 #include "local_xkc_sensor.h"
+#include "log_manager.h"
 
 static const char *TAG = "MAIN";
 
@@ -245,6 +246,9 @@ static esp_err_t init_globals(void)
 
 void app_main(void)
 {
+    // Initialize log manager FIRST — captures all subsequent boot logs
+    log_manager_init();
+
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "ESP32-C6 Zigbee Gateway & Automation Center");
     ESP_LOGI(TAG, "========================================");

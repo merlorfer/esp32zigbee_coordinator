@@ -1114,3 +1114,55 @@ select:focus {
     background: #ced4da;
     color: #212529;
 }
+
+/* Log viewer */
+.log-box {
+    font-family: monospace;
+    font-size: 11px;
+    height: 300px;
+    overflow-y: auto;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 8px;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.log-tab-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.log-tab-btn {
+    padding: 4px 12px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #f0f0f0;
+    cursor: pointer;
+}
+
+.log-tab-btn.active {
+    background: #007bff;
+    color: white;
+    border-color: #007bff;
+}
+
+.log-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 6px;
+}
+
+#history-session-select {
+    width: 100%;
+    margin-bottom: 8px;
+    padding: 4px 8px;
+}
+
+.log-line-E { color: #f48771; }
+.log-line-W { color: #dcdcaa; }
+.log-line-I { color: #d4d4d4; }
+.log-line-D { color: #9cdcfe; }

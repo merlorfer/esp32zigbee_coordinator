@@ -299,11 +299,11 @@ esp_err_t ble_service_notify_response(const char *data, size_t len)
     }
 
     // Response is too large, send in chunks
-    ESP_LOGI(TAG, "Response too large, sending in chunks");
-
     size_t offset = 0;
     int chunk_num = 0;
     int total_chunks = (len + MAX_NOTIFICATION_SIZE - 1) / MAX_NOTIFICATION_SIZE;
+
+    ESP_LOGI(TAG, "Sending response in %d chunks (%d bytes)", total_chunks, (int)len);
 
     // Allocate buffer for chunk with header
     char *chunk_buf = malloc(MAX_NOTIFICATION_SIZE + 32);
@@ -327,12 +327,10 @@ esp_err_t ble_service_notify_response(const char *data, size_t len)
         memcpy(chunk_buf + header_len, data + offset, chunk_data_size);
         size_t total_chunk_len = header_len + chunk_data_size;
 
-        ESP_LOGI(TAG, "Sending chunk %d/%d, size=%d", chunk_num, total_chunks, (int)total_chunk_len);
-
         esp_err_t ret = ble_service_send_notification(s_chr_val_handle_cmd_res, chunk_buf, total_chunk_len);
         if (ret != ESP_OK) {
             free(chunk_buf);
-            ESP_LOGE(TAG, "Failed to send chunk %d", chunk_num);
+            ESP_LOGE(TAG, "Chunk %d/%d failed: %s", chunk_num, total_chunks, esp_err_to_name(ret));
             return ret;
         }
 
@@ -344,7 +342,7 @@ esp_err_t ble_service_notify_response(const char *data, size_t len)
     }
 
     free(chunk_buf);
-    ESP_LOGI(TAG, "All chunks sent successfully (%d chunks)", total_chunks);
+    ESP_LOGI(TAG, "All %d chunks sent", total_chunks);
     return ESP_OK;
 }
 
