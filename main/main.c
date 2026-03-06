@@ -81,13 +81,11 @@ static void on_button_short_press(void)
     }
 
     if (s_setup_mode) {
-        // Setup mode → Operational mode (WiFi+BLE → Zigbee)
+        // Setup mode → Operational mode (WiFi → Zigbee+BLE)
         ESP_LOGI(TAG, "Exiting setup mode, starting Zigbee operational mode");
 
         wifi_task_stop();
-        ble_task_stop();
         s_wifi_mode = false;
-        s_ble_mode = false;
         s_setup_mode = false;
 
         // Clear any old commands in the queue
@@ -130,48 +128,9 @@ static void on_button_short_press(void)
 
         led_set_state(LED_STATE_NORMAL);
         xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
-        xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT | EVENT_BLE_MODE_BIT);
+        xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT);
 
-        ESP_LOGI(TAG, "Now in Zigbee operational mode");
-    } else if (!s_ble_mode) {
-        // Zigbee only → BLE config mode (PAUSE Zigbee to avoid crash)
-        ESP_LOGI(TAG, "Starting BLE configuration mode - pausing Zigbee scheduler");
-
-        // Pause scheduler to prevent Zigbee commands during BLE mode
-        scheduler_task_stop();
-
-        // Small delay to let Zigbee complete current operations
-        vTaskDelay(pdMS_TO_TICKS(100));
-
-        // Send configure_report commands to wake up sleeping sensors
-        // User can press sensor button during this ~2.5 second window
-        //ESP_LOGI(TAG, "Reconfiguring sensors (wake sleeping sensors now!)");
-        //zigbee_reconfigure_all_sensors();
-
-        // Read current sensor values
-        //ESP_LOGI(TAG, "Reading sensor data");
-        //zigbee_read_all_sensor_data();
-
-        // Small delay before starting BLE
-//vTaskDelay(pdMS_TO_TICKS(100));
-
-        ble_task_start();
-        s_ble_mode = true;
-        led_set_state(LED_STATE_BLE_ACTIVE);
-        xEventGroupSetBits(g_event_group, EVENT_BLE_MODE_BIT);
-        ESP_LOGI(TAG, "BLE configuration mode active (scheduler paused)");
-    } else {
-        // BLE → Zigbee only mode
-        ESP_LOGI(TAG, "Stopping BLE, returning to automation mode");
-        ble_task_stop();
-        s_ble_mode = false;
-
-        // Restart scheduler
-        scheduler_task_start();
-
-        led_set_state(LED_STATE_NORMAL);
-        xEventGroupClearBits(g_event_group, EVENT_BLE_MODE_BIT);
-        ESP_LOGI(TAG, "Back to Zigbee automation mode (scheduler resumed)");
+        ESP_LOGI(TAG, "Now in Zigbee operational mode (BLE remains active)");
     }
 }
 
