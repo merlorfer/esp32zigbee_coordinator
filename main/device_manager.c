@@ -461,7 +461,8 @@ esp_err_t device_manager_add_sensor(uint64_t ieee_addr, uint8_t endpoint,
     dev->sensor.upper_hysteresis = defaults ? defaults->default_hysteresis : 0.5f;
     dev->sensor.lower_linked_device = 0;  // Unassigned
     dev->sensor.upper_linked_device = 0;  // Unassigned
-    dev->sensor.timeout_seconds = 60;  // Increased from 30 to 60 seconds
+    // Event-driven sensors (IAS Zone / leak) use timeout_seconds=0 (disabled)
+    dev->sensor.timeout_seconds = (device_type == DEVICE_TYPE_LEAK_SENSOR) ? 0 : 60;
 
     // Error handling defaults
     dev->sensor.error_linked_device = 0;   // Unassigned

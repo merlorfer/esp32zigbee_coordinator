@@ -532,6 +532,11 @@ static void monitor_sensor_timeouts(void)
             continue;
         }
 
+        // timeout_seconds == 0 means disabled (event-driven sensors like IAS Zone)
+        if (dev.sensor.timeout_seconds == 0) {
+            continue;
+        }
+
         // Check timeout
         uint32_t elapsed = now - dev.reading.last_update;
         if (elapsed > dev.sensor.timeout_seconds) {

@@ -262,6 +262,15 @@ void app_main(void)
     // Initialize device manager (loads saved devices)
     ESP_ERROR_CHECK(device_manager_init());
 
+    // Apply persisted log filter
+    {
+        global_config_t gconfig;
+        device_manager_get_global_config(&gconfig);
+        if (gconfig.log_zigbee_only) {
+            log_manager_set_filter(true);
+        }
+    }
+
     // Initialize LED task
     ESP_ERROR_CHECK(led_task_init());
 

@@ -411,3 +411,23 @@ esp_err_t log_manager_clear(void)
 
     return ESP_OK;
 }
+
+// ============================================================================
+// Log filter
+// ============================================================================
+
+static const char * const FILTERED_TAGS[] = {
+    "BLE_TASK", "BLE_SERVICE", "BLE_HANDLERS",
+    "WIFI_TASK",
+    "NimBLE",
+    NULL
+};
+
+void log_manager_set_filter(bool zigbee_only)
+{
+    esp_log_level_t level = zigbee_only ? ESP_LOG_NONE : ESP_LOG_INFO;
+    for (int i = 0; FILTERED_TAGS[i] != NULL; i++) {
+        esp_log_level_set(FILTERED_TAGS[i], level);
+    }
+    ESP_LOGI(TAG, "Log filter: %s", zigbee_only ? "Zigbee-only" : "all");
+}

@@ -612,6 +612,8 @@ static char *handle_get_global_settings(cJSON *params)
     cJSON_AddNumberToObject(response, "local_xkc_gpio_upper",
         config.local_xkc_gpio_upper > 0 ? config.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER);
 
+    cJSON_AddBoolToObject(response, "log_zigbee_only", config.log_zigbee_only);
+
     // Valid GPIO pin list
     uint8_t gpio_count;
     const uint8_t *valid_gpios = local_xkc_sensor_get_valid_gpios(&gpio_count);
@@ -665,6 +667,11 @@ static char *handle_set_global_settings(cJSON *params)
         config.local_xkc_gpio_upper = (uint8_t)item->valueint;
     }
 
+    item = cJSON_GetObjectItem(params, "log_zigbee_only");
+    if (cJSON_IsBool(item)) {
+        config.log_zigbee_only = cJSON_IsTrue(item);
+    }
+
     // Validate GPIO pins if enabling
     if (config.local_xkc_enabled) {
         if (!local_xkc_sensor_is_valid_gpio(config.local_xkc_gpio_lower) ||
@@ -680,6 +687,8 @@ static char *handle_set_global_settings(cJSON *params)
     }
 
     device_manager_set_global_config(&config);
+
+    log_manager_set_filter(config.log_zigbee_only);
 
     // Handle XKC sensor start/stop (any mode)
     {

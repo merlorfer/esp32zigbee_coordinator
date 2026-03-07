@@ -243,6 +243,7 @@ endon
                     <div id="live-log-box" class="log-box"></div>
                     <div class="log-controls">
                         <label><input type="checkbox" id="log-autoscroll" checked> Auto-scroll</label>
+                        <label><input type="checkbox" id="log-zigbee-only" onchange="onLogFilterChange()"> Csak Zigbee logok</label>
                         <button class="btn btn-secondary btn-small" onclick="clearLiveDisplay()">Kijelző törlése</button>
                     </div>
                 </div>
@@ -328,17 +329,17 @@ endon
                         </div>
 
                         <div class="threshold-group">
-                            <h3>Also korlat (futes)</h3>
+                            <h3 id="lower-threshold-title">Also korlat (futes)</h3>
                             <div class="threshold-logic" id="lower-threshold-logic"></div>
-                            <div class="form-group">
+                            <div class="form-group" id="lower-threshold-form">
                                 <label for="edit-lower-threshold">Hatarertek:</label>
                                 <input type="number" id="edit-lower-threshold" step="0.1" value="18.0" oninput="updateThresholdLogicDisplay()">
                             </div>
-                            <div class="form-group">
+                            <div class="form-group" id="lower-hysteresis-form">
                                 <label for="edit-lower-hysteresis">Hiszterezis:</label>
                                 <input type="number" id="edit-lower-hysteresis" step="0.1" min="0" value="0.5" oninput="updateThresholdLogicDisplay()">
                             </div>
-                            <div class="form-group">
+                            <div class="form-group" id="lower-delay-form">
                                 <label for="edit-lower-delay">Kesleltetes (mp):</label>
                                 <input type="number" id="edit-lower-delay" min="0" max="3600" step="1" value="0" oninput="updateThresholdLogicDisplay()">
                                 <small class="hint">0 = azonnali bekapcsolas</small>
@@ -350,17 +351,17 @@ endon
                         </div>
 
                         <div class="threshold-group">
-                            <h3>Felso korlat (hutes)</h3>
+                            <h3 id="upper-threshold-title">Felso korlat (hutes)</h3>
                             <div class="threshold-logic" id="upper-threshold-logic"></div>
-                            <div class="form-group">
+                            <div class="form-group" id="upper-threshold-form">
                                 <label for="edit-upper-threshold">Hatarertek:</label>
                                 <input type="number" id="edit-upper-threshold" step="0.1" value="25.0" oninput="updateThresholdLogicDisplay()">
                             </div>
-                            <div class="form-group">
+                            <div class="form-group" id="upper-hysteresis-form">
                                 <label for="edit-upper-hysteresis">Hiszterezis:</label>
                                 <input type="number" id="edit-upper-hysteresis" step="0.1" min="0" value="0.5" oninput="updateThresholdLogicDisplay()">
                             </div>
-                            <div class="form-group">
+                            <div class="form-group" id="upper-delay-form">
                                 <label for="edit-upper-delay">Kesleltetes (mp):</label>
                                 <input type="number" id="edit-upper-delay" min="0" max="3600" step="1" value="0" oninput="updateThresholdLogicDisplay()">
                                 <small class="hint">0 = azonnali bekapcsolas</small>
@@ -390,7 +391,7 @@ endon
                             </div>
                         </div>
 
-                        <div class="threshold-group">
+                        <div class="threshold-group" id="report-settings-group">
                             <h3>Jelentési beallitasok</h3>
                             <div class="form-group">
                                 <label for="edit-report-min">Min. időköz (mp):</label>

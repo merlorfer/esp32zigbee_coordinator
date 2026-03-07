@@ -52,6 +52,13 @@ esp_err_t log_manager_get_session(const char *name, httpd_req_t *req);
  */
 esp_err_t log_manager_clear(void);
 
+/**
+ * @brief Set log filter mode.
+ *        If zigbee_only=true: BLE/WiFi log tags set to ESP_LOG_NONE.
+ *        If zigbee_only=false: those tags restored to ESP_LOG_INFO.
+ */
+void log_manager_set_filter(bool zigbee_only);
+
 #ifdef __cplusplus
 }
 #endif

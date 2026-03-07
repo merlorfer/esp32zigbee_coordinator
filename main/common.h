@@ -130,7 +130,8 @@ typedef enum {
     DEVICE_TYPE_ON_OFF_LIGHT = 0,
     DEVICE_TYPE_TEMPERATURE_SENSOR = 1,
     DEVICE_TYPE_HUMIDITY_SENSOR = 2,
-    DEVICE_TYPE_WATER_LEVEL_SENSOR = 3
+    DEVICE_TYPE_WATER_LEVEL_SENSOR = 3,
+    DEVICE_TYPE_LEAK_SENSOR = 4
 } device_type_t;
 
 /**
@@ -244,6 +245,8 @@ typedef struct {
     bool local_xkc_enabled;       // Toggle: enable local XKC water level sensor
     uint8_t local_xkc_gpio_lower; // GPIO pin for lower sensor (default: DEFAULT_XKC_GPIO_LOWER)
     uint8_t local_xkc_gpio_upper; // GPIO pin for upper sensor (default: DEFAULT_XKC_GPIO_UPPER)
+
+    bool log_zigbee_only;          // If true: BLE/WiFi log tags silenced (ESP_LOG_NONE)
 } global_config_t;
 
 /**

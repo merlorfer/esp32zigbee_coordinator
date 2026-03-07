@@ -13,6 +13,7 @@ const SENSOR_TYPES = {
     'temperature_sensor': { unit: '°C', displayName: 'Homerseklet' },
     'humidity_sensor': { unit: '%', displayName: 'Paratartalom' },
     'water_level_sensor': { unit: '', displayName: 'Vizszint' },
+    'leak_sensor': { unit: '', displayName: 'Szivargaserzekelo' },
 };
 
 function isSensorDevice(type) { return type in SENSOR_TYPES; }
@@ -22,6 +23,12 @@ function getWaterLevelText(value) {
     if (value === 0) return 'Ures';
     if (value === 1) return 'Alacsony';
     if (value === 2) return 'Tele';
+    return '--';
+}
+// Leak sensor display helper
+function getLeakText(value) {
+    if (value === 0) return 'Szaraz';
+    if (value === 1) return 'Vizszivargast erzekelt!';
     return '--';
 }
 function getSensorUnit(type) { return SENSOR_TYPES[type]?.unit || '?'; }
@@ -743,6 +750,9 @@ async function loadGlobalConfig() {
             document.getElementById('wifi-poweroff').checked = true;
         }
 
+        // Log filter
+        document.getElementById('log-zigbee-only').checked = data.log_zigbee_only || false;
+
         // Local XKC sensor
         const xkcEnabled = data.local_xkc_enabled || false;
         document.getElementById('xkc-enabled').checked = xkcEnabled;
@@ -779,9 +789,15 @@ function onXkcToggleChange() {
     }
 }
 
+async function onLogFilterChange() {
+    const enabled = document.getElementById('log-zigbee-only').checked;
+    await apiRequest('/api/config', 'POST', { log_zigbee_only: enabled });
+}
+
 async function saveGlobalConfig() {
     const maintain = document.getElementById('wifi-maintain').checked;
     const xkcEnabled = document.getElementById('xkc-enabled').checked;
+    const zigbeeOnly = document.getElementById('log-zigbee-only').checked;
     const gpioLower = parseInt(document.getElementById('xkc-gpio-lower').value);
     const gpioUpper = parseInt(document.getElementById('xkc-gpio-upper').value);
 
@@ -797,6 +813,7 @@ async function saveGlobalConfig() {
             local_xkc_enabled: xkcEnabled,
             local_xkc_gpio_lower: gpioLower,
             local_xkc_gpio_upper: gpioUpper,
+            log_zigbee_only: zigbeeOnly,
         });
 
         if (data.success || data.status === 'ok') {
@@ -909,8 +926,11 @@ function renderSensorCard(device) {
     const sensor = device.sensor || {};
     const unit = getSensorUnit(device.device_type);
     const isWaterLevel = device.device_type === 'water_level_sensor';
+    const isLeak = device.device_type === 'leak_sensor';
     const valueStr = (sensor.valid && typeof sensor.current_value === 'number')
-        ? (isWaterLevel ? getWaterLevelText(sensor.current_value) : sensor.current_value.toFixed(1))
+        ? (isWaterLevel ? getWaterLevelText(sensor.current_value)
+           : isLeak ? getLeakText(sensor.current_value)
+           : sensor.current_value.toFixed(1))
         : '--';
     const batteryHtml = renderBatteryInfo(sensor);
     const errorHtml = (!sensor.valid && sensor.last_update > 0)
@@ -1092,6 +1112,17 @@ function editDevice(ieeeAddr, endpoint, deviceType) {
         updateErrorActionVisibility();
         updateReportChangeDisplay();
         updateThresholdLogicDisplay();
+
+        const isLeakSensor = device.device_type === 'leak_sensor';
+        ['lower-threshold-form', 'lower-hysteresis-form', 'lower-delay-form', 'lower-threshold-logic',
+         'upper-threshold-form', 'upper-hysteresis-form', 'upper-delay-form', 'upper-threshold-logic',
+         'report-settings-group'].forEach(id => {
+            document.getElementById(id).classList.toggle('hidden', isLeakSensor);
+        });
+        document.getElementById('lower-threshold-title').textContent =
+            isLeakSensor ? 'Szaraz allapot (trigger)' : 'Also korlat (futes)';
+        document.getElementById('upper-threshold-title').textContent =
+            isLeakSensor ? 'Szivargás allapot (trigger)' : 'Felso korlat (hutes)';
     } else {
         document.getElementById('edit-enabled').checked = device.enabled;
         document.getElementById('edit-mode').value = device.mode;
