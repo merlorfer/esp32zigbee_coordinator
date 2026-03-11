@@ -39,6 +39,7 @@ static char s_parse_error[128];
 
 static uint32_t s_boot_time;
 static uint16_t s_last_time_tick;  // HH*60+MM of last processed tick
+static bool s_rules_enabled = true;
 
 /* ============================================================================
  * Helper: Find device index by custom_name
@@ -390,7 +391,7 @@ static esp_err_t parse_rules(const char *text)
     }
 
     // State machine
-    enum { STATE_IDLE, STATE_IN_RULE, STATE_IN_IF, STATE_IN_ELSE } state = STATE_IDLE;
+    enum { STATE_IDLE, STATE_IN_RULE, STATE_IN_IF, STATE_IN_ELSE, STATE_IN_POST_IF } state = STATE_IDLE;
     rule_t *cur = NULL;
     int line_num = 0;
 
@@ -533,7 +534,7 @@ static esp_err_t parse_rules(const char *text)
                          "Line %d: 'endif' without matching 'if'", line_num);
                 return ESP_ERR_INVALID_ARG;
             }
-            state = STATE_IN_RULE;
+            state = STATE_IN_POST_IF;
             continue;
         }
 
@@ -603,7 +604,7 @@ static esp_err_t parse_rules(const char *text)
         }
 
         // Action line
-        if (state == STATE_IN_RULE || state == STATE_IN_IF || state == STATE_IN_ELSE) {
+        if (state == STATE_IN_RULE || state == STATE_IN_IF || state == STATE_IN_ELSE || state == STATE_IN_POST_IF) {
             rule_action_t act;
             memset(&act, 0, sizeof(act));
             if (!parse_action(lp, &act, line_num)) {
@@ -617,6 +618,13 @@ static esp_err_t parse_rules(const char *text)
                     return ESP_ERR_INVALID_ARG;
                 }
                 cur->else_actions[cur->else_count++] = act;
+            } else if (state == STATE_IN_POST_IF) {
+                if (cur->post_count >= MAX_RULE_ACTIONS) {
+                    snprintf(s_parse_error, sizeof(s_parse_error),
+                             "Line %d: max %d post-if actions exceeded", line_num, MAX_RULE_ACTIONS);
+                    return ESP_ERR_INVALID_ARG;
+                }
+                cur->post_actions[cur->post_count++] = act;
             } else {
                 if (cur->then_count >= MAX_RULE_ACTIONS) {
                     snprintf(s_parse_error, sizeof(s_parse_error),
@@ -830,6 +838,7 @@ static void rules_engine_on_var_changed(uint8_t var_index)
             } else {
                 execute_actions(rule->else_actions, rule->else_count);
             }
+            execute_actions(rule->post_actions, rule->post_count);
         }
     }
 
@@ -872,6 +881,7 @@ static void process_event(rule_event_type_t event_type, uint8_t param, uint16_t 
             } else {
                 execute_actions(rule->else_actions, rule->else_count);
             }
+            execute_actions(rule->post_actions, rule->post_count);
         }
     }
 }
@@ -1007,19 +1017,30 @@ esp_err_t rules_engine_save(void)
     return ESP_OK;
 }
 
+void rules_engine_set_enabled(bool enabled)
+{
+    s_rules_enabled = enabled;
+    ESP_LOGI(TAG, "Rules engine %s", enabled ? "enabled" : "disabled");
+}
+
+bool rules_engine_get_enabled(void)
+{
+    return s_rules_enabled;
+}
+
 void rules_engine_on_sensor_data(uint8_t device_index, float value)
 {
     if (device_index >= MAX_DEVICES) return;
     s_sensor_values[device_index] = value;
 
-    if (s_rule_count > 0) {
+    if (s_rule_count > 0 && s_rules_enabled) {
         process_event(EVT_SENSOR, device_index, 0);
     }
 }
 
 void rules_engine_on_timer(uint8_t timer_id)
 {
-    if (s_rule_count > 0) {
+    if (s_rule_count > 0 && s_rules_enabled) {
         ESP_LOGI(TAG, "Timer %d fired", timer_id + 1);
         process_event(EVT_TIMER, timer_id, 0);
     }
@@ -1028,7 +1049,7 @@ void rules_engine_on_timer(uint8_t timer_id)
 void rules_engine_on_boot(void)
 {
     s_boot_time = (uint32_t)time(NULL);
-    if (s_rule_count > 0) {
+    if (s_rule_count > 0 && s_rules_enabled) {
         ESP_LOGI(TAG, "Boot event");
         process_event(EVT_BOOT, 0, 0);
     }
@@ -1041,7 +1062,7 @@ void rules_engine_on_time_tick(uint8_t hour, uint8_t minute)
     if (current == s_last_time_tick) return;  // Already processed this minute
     s_last_time_tick = current;
 
-    if (s_rule_count > 0) {
+    if (s_rule_count > 0 && s_rules_enabled) {
         process_event(EVT_TIME, 0, current);
     }
 }

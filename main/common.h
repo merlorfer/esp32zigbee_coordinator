@@ -247,6 +247,7 @@ typedef struct {
     uint8_t local_xkc_gpio_upper; // GPIO pin for upper sensor (default: DEFAULT_XKC_GPIO_UPPER)
 
     bool log_zigbee_only;          // If true: BLE/WiFi log tags silenced (ESP_LOG_NONE)
+    bool rules_enabled;            // If false: rules engine events are suppressed
 } global_config_t;
 
 /**

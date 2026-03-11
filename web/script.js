@@ -659,8 +659,8 @@ async function deleteDevice(ieeeAddr, endpoint) {
         if (data.success || data.status === 'ok') {
             showToast('Eszkoz torolve');
 
-            // Remove device from local array immediately for instant UI update
-            devices = devices.filter(d => !(d.ieee_addr === ieeeAddr && d.endpoint === endpoint));
+            // Remove ALL entries with this IEEE address (multi-endpoint devices share one IEEE)
+            devices = devices.filter(d => d.ieee_addr !== ieeeAddr);
             renderDevices();
 
             // Also reload from server after a short delay (especially for BLE)
@@ -753,6 +753,9 @@ async function loadGlobalConfig() {
         // Log filter
         document.getElementById('log-zigbee-only').checked = data.log_zigbee_only || false;
 
+        // Rules enabled (default true if not set)
+        document.getElementById('rules-enabled').checked = (data.rules_enabled !== false);
+
         // Local XKC sensor
         const xkcEnabled = data.local_xkc_enabled || false;
         document.getElementById('xkc-enabled').checked = xkcEnabled;
@@ -792,6 +795,11 @@ function onXkcToggleChange() {
 async function onLogFilterChange() {
     const enabled = document.getElementById('log-zigbee-only').checked;
     await apiRequest('/api/config', 'POST', { log_zigbee_only: enabled });
+}
+
+async function onRulesEnabledChange() {
+    const enabled = document.getElementById('rules-enabled').checked;
+    await apiRequest('/api/config', 'POST', { rules_enabled: enabled });
 }
 
 async function saveGlobalConfig() {

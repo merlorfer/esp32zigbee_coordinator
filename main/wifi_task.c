@@ -768,6 +768,8 @@ static esp_err_t api_global_config_get_handler(httpd_req_t *req)
 
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "wifi_on_behavior", config.wifi_on_behavior);
+    cJSON_AddBoolToObject(response, "log_zigbee_only", config.log_zigbee_only);
+    cJSON_AddBoolToObject(response, "rules_enabled", config.rules_enabled);
 
     // Local XKC sensor settings
     cJSON_AddBoolToObject(response, "local_xkc_enabled", config.local_xkc_enabled);
@@ -816,6 +818,18 @@ static esp_err_t api_global_config_post_handler(httpd_req_t *req)
     cJSON *item = cJSON_GetObjectItem(root, "wifi_on_behavior");
     if (cJSON_IsBool(item)) {
         config.wifi_on_behavior = cJSON_IsTrue(item);
+    }
+
+    item = cJSON_GetObjectItem(root, "log_zigbee_only");
+    if (cJSON_IsBool(item)) {
+        config.log_zigbee_only = cJSON_IsTrue(item);
+        log_manager_set_filter(config.log_zigbee_only);
+    }
+
+    item = cJSON_GetObjectItem(root, "rules_enabled");
+    if (cJSON_IsBool(item)) {
+        config.rules_enabled = cJSON_IsTrue(item);
+        rules_engine_set_enabled(config.rules_enabled);
     }
 
     // Local XKC sensor settings

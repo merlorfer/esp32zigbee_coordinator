@@ -138,8 +138,7 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
 
 esp_err_t device_manager_remove(uint64_t ieee_addr)
 {
-    int index = device_manager_find_index(ieee_addr);
-    if (index < 0) {
+    if (device_manager_find_index(ieee_addr) < 0) {
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -147,25 +146,37 @@ esp_err_t device_manager_remove(uint64_t ieee_addr)
         xSemaphoreTake(g_device_mutex, portMAX_DELAY);
     }
 
-    // Shift remaining devices down
-    for (int i = index; i < s_device_count - 1; i++) {
-        memcpy(&s_devices[i], &s_devices[i + 1], sizeof(device_config_t));
-        memcpy(&s_errors[i], &s_errors[i + 1], sizeof(device_error_t));
+    // Remove ALL entries with this IEEE address (multi-endpoint devices register multiple entries)
+    uint8_t removed = 0;
+    int i = 0;
+    while (i < s_device_count) {
+        if (s_devices[i].ieee_addr == ieee_addr) {
+            // Shift remaining devices down
+            for (int j = i; j < s_device_count - 1; j++) {
+                memcpy(&s_devices[j], &s_devices[j + 1], sizeof(device_config_t));
+                memcpy(&s_errors[j], &s_errors[j + 1], sizeof(device_error_t));
+            }
+            memset(&s_devices[s_device_count - 1], 0, sizeof(device_config_t));
+            memset(&s_errors[s_device_count - 1], 0, sizeof(device_error_t));
+            s_device_count--;
+            removed++;
+            // Don't increment i — recheck same index after shift
+        } else {
+            i++;
+        }
     }
 
-    // Clear last slot
-    memset(&s_devices[s_device_count - 1], 0, sizeof(device_config_t));
-    memset(&s_errors[s_device_count - 1], 0, sizeof(device_error_t));
-
-    s_device_count--;
     s_global_config.device_count = s_device_count;
 
     // Save all devices to NVS (indices changed)
-    for (uint8_t i = 0; i < s_device_count; i++) {
-        nvs_save_device(i, &s_devices[i]);
-        nvs_save_error(i, &s_errors[i]);
+    for (uint8_t k = 0; k < s_device_count; k++) {
+        nvs_save_device(k, &s_devices[k]);
+        nvs_save_error(k, &s_errors[k]);
     }
-    nvs_delete_device(s_device_count);
+    // Delete NVS slots that are now beyond the new count
+    for (uint8_t k = s_device_count; k < s_device_count + removed; k++) {
+        nvs_delete_device(k);
+    }
     nvs_save_device_count(s_device_count);
     nvs_save_global_config(&s_global_config);
 
@@ -173,8 +184,8 @@ esp_err_t device_manager_remove(uint64_t ieee_addr)
         xSemaphoreGive(g_device_mutex);
     }
 
-    ESP_LOGI(TAG, "Removed device at index %d, %d devices remaining",
-             index, s_device_count);
+    ESP_LOGI(TAG, "Removed %d device(s) with IEEE addr, %d devices remaining",
+             removed, s_device_count);
     return ESP_OK;
 }
 

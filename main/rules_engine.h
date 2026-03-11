@@ -103,6 +103,9 @@ typedef struct {
 
     rule_action_t else_actions[MAX_RULE_ACTIONS];
     uint8_t else_count;
+
+    rule_action_t post_actions[MAX_RULE_ACTIONS];  // actions after endif (always run)
+    uint8_t post_count;
 } rule_t;
 
 typedef struct {
@@ -137,6 +140,9 @@ void rules_engine_timer_tick(void);
 uint8_t rules_engine_get_rule_count(void);
 void rules_engine_get_timer_state(uint8_t index, bool *active, int32_t *remaining);
 const char* rules_engine_get_parse_error(void);
+
+void rules_engine_set_enabled(bool enabled);
+bool rules_engine_get_enabled(void);
 
 void rules_engine_set_var_config(uint8_t index, bool persist, float default_value);
 void rules_engine_get_var_config(uint8_t index, bool *persist, float *default_value);

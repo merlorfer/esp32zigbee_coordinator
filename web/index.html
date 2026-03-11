@@ -144,7 +144,11 @@
             <section class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                     <h2 style="margin: 0; padding: 0; border: none;">Szabalyok</h2>
-                    <div style="display: flex; gap: 8px;">
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <label style="display: flex; align-items: center; gap: 5px; font-size: 0.9em; cursor: pointer;">
+                            <input type="checkbox" id="rules-enabled" onchange="onRulesEnabledChange()" checked>
+                            Szabályok futtatása
+                        </label>
                         <button onclick="resetRulesEngine()" class="btn btn-danger btn-small" title="Torol minden szabalyt es valtozo-konfigot az NVS-bol">
                             Reset
                         </button>

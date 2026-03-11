@@ -24,6 +24,7 @@
 #include "scheduler_task.h"
 #include "local_xkc_sensor.h"
 #include "log_manager.h"
+#include "rules_engine.h"
 
 static const char *TAG = "MAIN";
 
@@ -262,13 +263,15 @@ void app_main(void)
     // Initialize device manager (loads saved devices)
     ESP_ERROR_CHECK(device_manager_init());
 
-    // Apply persisted log filter
+    // Apply persisted log filter and rules enabled state
     {
         global_config_t gconfig;
         device_manager_get_global_config(&gconfig);
         if (gconfig.log_zigbee_only) {
             log_manager_set_filter(true);
         }
+        // rules_enabled defaults to true; only disable if explicitly set false
+        rules_engine_set_enabled(gconfig.rules_enabled);
     }
 
     // Initialize LED task

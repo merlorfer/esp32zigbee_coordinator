@@ -1,0 +1,15 @@
+on boot do
+    timerSet 1 [var2]
+    set var1 0
+endon
+
+on timer 1 do
+    if [var1] = 0
+        set var1 1
+        on FutesKonnektor
+    else
+        set var1 0
+        off FutesKonnektor
+    endif
+    timerSet 1 [var2]
+endon
