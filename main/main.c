@@ -69,6 +69,20 @@ static void pairing_timer_callback(TimerHandle_t timer)
 
 static bool s_zigbee_started = false;  // Track if Zigbee task was ever started
 
+static void on_button_short_press(void);
+
+static void do_switch_to_zigbee_mode(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(300)); // wait for HTTP response to be sent
+    on_button_short_press();
+    vTaskDelete(NULL);
+}
+
+void app_request_mode_switch(void)
+{
+    xTaskCreate(do_switch_to_zigbee_mode, "mode_sw", 4096, NULL, 5, NULL);
+}
+
 static void on_button_short_press(void)
 {
     ESP_LOGI(TAG, "Short press detected");

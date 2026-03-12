@@ -297,9 +297,25 @@ static char *handle_set_device_config(cJSON *params)
         }
     }
 
-    // Update fields if present
+    // Check for direct control command (on/off/toggle) — early return
     cJSON *item;
+    item = cJSON_GetObjectItem(params, "cmd");
+    if (cJSON_IsString(item)) {
+        const char *cmd_str = item->valuestring;
+        zigbee_cmd_type_t cmd_type = CMD_ON;
+        if (strcmp(cmd_str, "off") == 0) cmd_type = CMD_OFF;
+        else if (strcmp(cmd_str, "toggle") == 0) cmd_type = CMD_TOGGLE;
+        cmd_queue_msg_t msg = { .ieee_addr = ieee_addr, .endpoint = dev.endpoint, .cmd = cmd_type };
+        xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+        cJSON *response = cJSON_CreateObject();
+        cJSON_AddStringToObject(response, "status", "ok");
+        cJSON_AddStringToObject(response, "message", "Command sent");
+        char *json_str = cJSON_PrintUnformatted(response);
+        cJSON_Delete(response);
+        return json_str;
+    }
 
+    // Update fields if present
     item = cJSON_GetObjectItem(params, "custom_name");
     if (cJSON_IsString(item)) {
         strncpy(dev.custom_name, item->valuestring, MAX_DEVICE_NAME_LEN - 1);
@@ -1228,12 +1244,46 @@ char *ble_handlers_process_command(const char *json_str, size_t len)
         response = handle_get_global_settings(params);
     } else if (strcmp(cmd, "set_global_settings") == 0) {
         response = handle_set_global_settings(params);
+    } else if (strcmp(cmd, "switch_mode") == 0) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "success", true);
+        cJSON_AddStringToObject(root, "message", "Uzemmod valtas...");
+        char *json_str = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        app_request_mode_switch();
+        return json_str;
+    } else if (strcmp(cmd, "reboot") == 0) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "success", true);
+        cJSON_AddStringToObject(root, "message", "Ujrainditas...");
+        char *json_str = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        // Delay restart to allow BLE response to be sent
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+        return json_str;
     } else if (strcmp(cmd, "factory_reset") == 0) {
         response = handle_factory_reset(params);
     } else if (strcmp(cmd, "configure_sensor_thresholds") == 0) {
         response = handle_configure_sensor_thresholds(params);
     } else if (strcmp(cmd, "link_sensor_devices") == 0) {
         response = handle_link_sensor_devices(params);
+    } else if (strcmp(cmd, "get_rules_timers") == 0) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON *timers = cJSON_CreateArray();
+        for (int i = 0; i < MAX_RULE_TIMERS; i++) {
+            bool active;
+            int32_t remaining;
+            rules_engine_get_timer_state(i, &active, &remaining);
+            cJSON *t = cJSON_CreateObject();
+            cJSON_AddNumberToObject(t, "id", i + 1);
+            cJSON_AddBoolToObject(t, "active", active);
+            cJSON_AddNumberToObject(t, "remaining", remaining);
+            cJSON_AddItemToArray(timers, t);
+        }
+        cJSON_AddItemToObject(root, "timers", timers);
+        response = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
     } else if (strcmp(cmd, "get_rules") == 0) {
         response = handle_get_rules(params);
     } else if (strcmp(cmd, "set_rules") == 0) {

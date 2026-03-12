@@ -304,6 +304,8 @@ typedef struct {
 
 extern EventGroupHandle_t g_event_group;
 extern QueueHandle_t g_cmd_queue;
+
+void app_request_mode_switch(void);
 extern QueueHandle_t g_led_queue;
 extern QueueHandle_t g_error_queue;
 extern QueueHandle_t g_sensor_data_queue;

@@ -46,6 +46,7 @@ let bleConnected = false;
 let statusInterval = null;
 let devicesInterval = null;
 let logsInterval = null;
+let timersInterval = null;
 
 // Helper function to check if we should poll via WiFi
 function shouldPollViaWiFi() {
@@ -61,6 +62,9 @@ function shouldPollViaWiFi() {
 // ============================================================================
 
 document.addEventListener('DOMContentLoaded', function() {
+    // Set initial button states
+    updateControlButtons();
+
     // Initial load - these will use WiFi by default
     loadStatus();
     loadDevices();
@@ -84,6 +88,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // Live log polling — apiRequest routes to BLE or WiFi automatically
     pollLiveLogs();
     logsInterval = setInterval(pollLiveLogs, 3000);
+
+    // Timer state polling
+    timersInterval = setInterval(pollTimers, 5000);
 });
 
 // ============================================================================
@@ -199,6 +206,17 @@ function updateBLEStatus(connected, statusMessage) {
             stickyDisconnectBtn.classList.add('hidden');
         }
     }
+
+    updateControlButtons();
+}
+
+function updateControlButtons() {
+    const pairingBtn = document.getElementById('pairing-btn');
+    if (pairingBtn) {
+        const canPair = bleConnected && zigbeeActive;
+        pairingBtn.disabled = !canPair;
+        pairingBtn.title = canPair ? '' : 'Csak Zigbee uzemmodban elerheto (BLE kapcsolat szukseges)';
+    }
 }
 
 async function connectBLE() {
@@ -286,6 +304,7 @@ function disconnectBLE() {
     bleConnected = false;
 
     updateBLEStatus(false, 'Nincs csatlakozva');
+    loadDevices(); // re-render cards to disable control buttons
 
     // Re-enable connect buttons
     const connectBtn = document.getElementById('ble-connect-btn');
@@ -458,6 +477,14 @@ function endpointToCommand(endpoint, body) {
         }
     }
 
+    if (endpoint === '/api/reboot') {
+        return { cmd: 'reboot', params: {} };
+    }
+
+    if (endpoint === '/api/wifi/shutdown') {
+        return { cmd: 'switch_mode', params: {} };
+    }
+
     if (endpoint === '/api/factory-reset') {
         return {
             cmd: 'factory_reset',
@@ -471,6 +498,10 @@ function endpointToCommand(endpoint, body) {
         } else {
             return { cmd: 'get_rules', params: {} };
         }
+    }
+
+    if (endpoint === '/api/rules/timers') {
+        return { cmd: 'get_rules_timers', params: {} };
     }
 
     if (endpoint === '/api/rules/var') {
@@ -522,6 +553,7 @@ async function loadStatus() {
 
         // Update Zigbee status
         zigbeeActive = data.zigbee_active || false;
+        updateControlButtons();
 
         if (data.rtc_initialized) {
             rtcStatus.className = 'rtc-status ok';
@@ -837,6 +869,56 @@ async function saveGlobalConfig() {
     }
 }
 
+async function rebootDevice() {
+    if (!confirm('Biztosan ujra szeretne inditani az eszkoezt?')) return;
+    try {
+        await apiRequest('/api/reboot', 'POST');
+        showToast('Ujrainditas folyamatban...');
+    } catch (error) {
+        console.error('Reboot error:', error);
+        showToast('Kapcsolati hiba', true);
+    }
+}
+
+async function switchMode() {
+    if (zigbeeActive) {
+        showToast('Mar Zigbee uzemmodban van');
+        return;
+    }
+    try {
+        await apiRequest('/api/wifi/shutdown', 'POST');
+        showToast('Uzemmod valtas...');
+    } catch (error) {
+        console.error('Mode switch error:', error);
+        showToast('Kapcsolati hiba', true);
+    }
+}
+
+async function startPairing() {
+    if (!confirm('Elinditsuk a parositas modot?')) return;
+    try {
+        const data = await apiRequest('/api/zigbee/permit-join', 'POST', { duration: 60 });
+        if (data.success || data.status === 'ok') {
+            showToast('Parositas mod aktiv (60mp)');
+        } else {
+            showToast(data.message || 'Hiba tortent', true);
+        }
+    } catch (error) {
+        console.error('Pairing error:', error);
+        showToast('Kapcsolati hiba', true);
+    }
+}
+
+async function sendDeviceCmd(ieeeAddr, deviceType, cmd) {
+    try {
+        await apiRequest('/api/devices/' + ieeeAddr + '/config', 'POST', { cmd: cmd, device_type: deviceType });
+        showToast(cmd.toUpperCase() + ' parancs elkuldve');
+    } catch (error) {
+        console.error('Device cmd error:', error);
+        showToast('Kapcsolati hiba', true);
+    }
+}
+
 async function factoryReset() {
     if (!confirm('Biztosan torolni szeretne az osszes eszkozt es beallitast? Ez a muvelet nem vonhato vissza!')) {
         return;
@@ -892,6 +974,8 @@ function renderDevices() {
 function renderOnOffCard(device) {
     const sensorControllers = getSensorControlInfo(device.ieee_addr);
     const isSensorControlled = sensorControllers.length > 0;
+    const canControl = bleConnected && zigbeeActive;
+    const ctrlDisabled = canControl ? '' : 'disabled title="Csak BLE+Zigbee uzemmodban elerheto"';
 
     let sensorBadgesHtml = '';
     if (isSensorControlled) {
@@ -909,6 +993,11 @@ function renderOnOffCard(device) {
         <div class="device-item${isSensorControlled ? ' sensor-controlled' : ''}">
             <div class="device-info">
                 <div class="device-name">${escapeHtml(device.custom_name)}</div>
+                <div class="device-ctrl-buttons">
+                    <button onclick="sendDeviceCmd('${device.ieee_addr}', '${device.device_type}', 'on')" class="btn btn-success btn-small" ${ctrlDisabled}>BE</button>
+                    <button onclick="sendDeviceCmd('${device.ieee_addr}', '${device.device_type}', 'off')" class="btn btn-secondary btn-small" ${ctrlDisabled}>KI</button>
+                    <button onclick="sendDeviceCmd('${device.ieee_addr}', '${device.device_type}', 'toggle')" class="btn btn-primary btn-small" ${ctrlDisabled}>Valtas</button>
+                </div>
                 <div class="device-manufacturer">${escapeHtml(device.manufacturer || 'Ismeretlen gyarto')}</div>
                 <div class="device-model">${escapeHtml(device.model || 'Ismeretlen model')}</div>
                 <div class="device-addr">${device.ieee_addr} | EP: ${device.endpoint}</div>
@@ -1353,22 +1442,31 @@ function renderRulesState(data) {
         }).join('');
     }
 
-    // Render timers
+    renderTimers(data.timers);
+}
+
+function renderTimers(timers) {
     const timersContainer = document.getElementById('rules-timers-list');
-    if (timersContainer && data.timers) {
-        const activeTimers = data.timers.filter(t => t.active);
-        if (activeTimers.length > 0) {
-            timersContainer.innerHTML = activeTimers.map(t =>
-                `<div class="rules-card rules-timer-card">
-                    <span class="rules-card-name">timer ${t.id}</span>
-                    <span class="rules-card-value">${t.remaining} mp</span>
-                    <span class="rules-card-status active">Aktiv</span>
-                </div>`
-            ).join('');
-        } else {
-            timersContainer.innerHTML = '<span class="hint">Nincs aktiv timer</span>';
-        }
+    if (!timersContainer || !timers) return;
+    const activeTimers = timers.filter(t => t.active);
+    if (activeTimers.length > 0) {
+        timersContainer.innerHTML = activeTimers.map(t =>
+            `<div class="rules-card rules-timer-card">
+                <span class="rules-card-name">timer ${t.id}</span>
+                <span class="rules-card-value">${t.remaining} mp</span>
+                <span class="rules-card-status active">Aktiv</span>
+            </div>`
+        ).join('');
+    } else {
+        timersContainer.innerHTML = '<span class="hint">Nincs aktiv timer</span>';
     }
+}
+
+async function pollTimers() {
+    try {
+        const data = await apiRequest('/api/rules/timers');
+        if (data && data.timers) renderTimers(data.timers);
+    } catch (e) { /* silent */ }
 }
 
 async function editRulesVar(index) {

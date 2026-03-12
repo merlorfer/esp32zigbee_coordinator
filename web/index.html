@@ -32,6 +32,15 @@
         </header>
 
         <main>
+            <!-- Device Control Panel -->
+            <section class="card control-panel-card">
+                <div class="control-panel-buttons">
+                    <button onclick="rebootDevice()" class="btn btn-danger btn-small">Ujrainditas</button>
+                    <button onclick="switchMode()" class="btn btn-secondary btn-small" id="mode-switch-btn">Uzemmod valtas</button>
+                    <button onclick="startPairing()" class="btn btn-primary btn-small" id="pairing-btn">Parositas</button>
+                </div>
+            </section>
+
             <!-- BLE Connection Section -->
             <section class="card ble-card" id="ble-section">
                 <h2>Bluetooth Kapcsolat</h2>

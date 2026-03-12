@@ -19,6 +19,8 @@
 #include "esp_spiffs.h"
 #include "esp_netif.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
+#include "esp_system.h"
 #include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
@@ -278,8 +280,8 @@ static esp_err_t api_zigbee_permit_join_post_handler(httpd_req_t *req)
         cJSON_Delete(root);
     }
 
-    // TODO: Send permit join command to Zigbee task
     ESP_LOGI(TAG, "Permit join requested for %d seconds", duration);
+    zigbee_permit_join(duration);
 
     char time_str[32];
     time_t now = time(NULL) + duration;
@@ -621,6 +623,29 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
         if (cJSON_IsNumber(item)) dev.sensor.upper_delay_seconds = (uint16_t)item->valueint;
     }
 
+    // Direct device command (on/off/toggle) — send to queue and return early
+    item = cJSON_GetObjectItem(root, "cmd");
+    if (cJSON_IsString(item)) {
+        const char *cmd_str = item->valuestring;
+        cmd_queue_msg_t msg = {
+            .ieee_addr = ieee_addr,
+            .endpoint  = dev.endpoint,
+            .cmd       = CMD_ON
+        };
+        if (strcmp(cmd_str, "off") == 0)    msg.cmd = CMD_OFF;
+        else if (strcmp(cmd_str, "toggle") == 0) msg.cmd = CMD_TOGGLE;
+        xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+        cJSON_Delete(root);
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddBoolToObject(resp, "success", true);
+        char *js = cJSON_Print(resp);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, js);
+        free(js);
+        cJSON_Delete(resp);
+        return ESP_OK;
+    }
+
     cJSON_Delete(root);
 
     ESP_LOGI(TAG, "Saving config: mode=%d, enabled=%d, delay_off1=%lu, delay_dur=%lu, delay_off2=%lu",
@@ -754,9 +779,8 @@ static esp_err_t api_wifi_shutdown_post_handler(httpd_req_t *req)
     // Persist logs before WiFi/HTTP shuts down
     log_manager_flush();
 
-    // Schedule Wi-Fi stop after response is sent
-    xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
-    xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT);
+    // Trigger full mode switch in a separate task (mirrors physical button press)
+    app_request_mode_switch();
 
     return ESP_OK;
 }
@@ -918,6 +942,26 @@ static esp_err_t api_global_config_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static void reboot_timer_cb(void *arg) { esp_restart(); }
+
+static esp_err_t api_reboot_handler(httpd_req_t *req)
+{
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", true);
+    cJSON_AddStringToObject(response, "message", "Ujrainditas...");
+    char *json_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+    free(json_str);
+    cJSON_Delete(response);
+
+    esp_timer_handle_t t;
+    esp_timer_create_args_t args = { .callback = reboot_timer_cb, .name = "reboot" };
+    esp_timer_create(&args, &t);
+    esp_timer_start_once(t, 500000); // 500ms
+    return ESP_OK;
+}
+
 static esp_err_t api_factory_reset_handler(httpd_req_t *req)
 {
     ESP_LOGW(TAG, "Factory reset requested!");
@@ -1011,6 +1055,29 @@ static esp_err_t api_rules_get_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json_str);
 
+    free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t api_rules_timers_get_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *timers = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_TIMERS; i++) {
+        bool active;
+        int32_t remaining;
+        rules_engine_get_timer_state(i, &active, &remaining);
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddNumberToObject(t, "id", i + 1);
+        cJSON_AddBoolToObject(t, "active", active);
+        cJSON_AddNumberToObject(t, "remaining", remaining);
+        cJSON_AddItemToArray(timers, t);
+    }
+    cJSON_AddItemToObject(root, "timers", timers);
+    char *json_str = cJSON_Print(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
     free(json_str);
     cJSON_Delete(root);
     return ESP_OK;
@@ -1460,6 +1527,13 @@ static esp_err_t start_webserver(void)
     };
     httpd_register_uri_handler(s_server, &api_rules_post);
 
+    httpd_uri_t api_rules_timers = {
+        .uri = "/api/rules/timers",
+        .method = HTTP_GET,
+        .handler = api_rules_timers_get_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_timers);
+
     httpd_uri_t api_rules_var = {
         .uri = "/api/rules/var",
         .method = HTTP_POST,
@@ -1480,6 +1554,13 @@ static esp_err_t start_webserver(void)
         .handler = api_rules_reset_handler
     };
     httpd_register_uri_handler(s_server, &api_rules_reset);
+
+    httpd_uri_t api_reboot = {
+        .uri = "/api/reboot",
+        .method = HTTP_POST,
+        .handler = api_reboot_handler
+    };
+    httpd_register_uri_handler(s_server, &api_reboot);
 
     httpd_uri_t api_factory_reset = {
         .uri = "/api/factory-reset",

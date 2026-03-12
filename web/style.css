@@ -441,6 +441,22 @@ select:focus {
     align-items: flex-start;
 }
 
+.device-ctrl-buttons {
+    display: flex;
+    gap: 6px;
+    margin: 4px 0 6px 0;
+}
+
+.control-panel-card {
+    margin-bottom: 12px;
+}
+
+.control-panel-buttons {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
 /* Modal */
 .modal {
     position: fixed;
