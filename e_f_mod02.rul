@@ -13,18 +13,20 @@ endon
 
 on time 08:00 do
   if [var4] = 0 and [var6] = 0
-    on Tap
-    timerSet 1 [var1]
     set var4 1
-    on pumpTolt
   endif
 endon
 
 on timer1 do
   if [var4] = 0 and [hour] <= 23 and [hour] >= 8
+    set var4 1
+  endif
+endon
+
+on var4 do
+  if [var4] = 1
     on Tap
     timerSet 1 [var1]
-    set var4 1
     on pumpTolt
   endif
 endon
