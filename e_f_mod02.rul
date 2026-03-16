@@ -1,7 +1,7 @@
 on boot do
   if [WLSensor] > 0
     on Tap
-    timerSet 1 [var3]
+    timerSet 2 [var3]
     set var4 3
     on pumpLe
   else
@@ -13,12 +13,6 @@ endon
 
 on time 08:00 do
   if [var4] = 0 and [var6] = 0
-    set var4 1
-  endif
-endon
-
-on timer1 do
-  if [var4] = 0 and [hour] <= 23 and [hour] >= 8
     set var4 1
   endif
 endon
@@ -43,20 +37,11 @@ endon
 on WLSensor do
   if [WLSensor] <= 0 and [var4] = 3
     off pumpLe
-    timerSet 1 [var5]
+    timerSet 2 [var5]
     set var4 0
     off Tap
   endif
 endon
-
-//on WLeakSensor do
-//  if [WLeakSensor] > 0 and [var4] = 1
-//    off pumpTolt
-//    timerCancel 1
-//    set var4 0
-//    set var6 1
-//  endif
-//endon
 
 on timer1 do
   if [var4] = 2
@@ -82,6 +67,12 @@ on timer2 do
     off pumpTolt
     set var6 1
     off Tap
+  endif
+endon
+
+on timer2 do
+  if [var4] = 0
+    set var4 1
   endif
 endon
 
