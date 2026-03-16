@@ -62,13 +62,22 @@ on timer1 do
   if [var4] = 2
     on Tap
     set var4 3
-    timerSet 1 [var3]
+    timerSet 2 [var3]
     on pumpLe
   endif
 endon
 
 on timer1 do
-  if [var4] = 3 or [var4] = 1
+  if [var4] = 1
+    off pumpLe
+    off pumpTolt
+    set var6 1
+    off Tap
+  endif
+endon
+
+on timer2 do
+  if [var4] = 3
     off pumpLe
     off pumpTolt
     set var6 1
