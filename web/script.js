@@ -1137,16 +1137,19 @@ async function saveRules() {
         statusEl.className   = '';
 
         const data = await apiRequest('/api/rules', 'POST', { text: editor.value });
-        if (data.ok) {
+        // WiFi returns {ok:true}, BLE returns {success:true} — accept both
+        if (data.ok || data.success) {
             statusEl.textContent = (data.rule_count || 0) + ' szabaly mentve';
             statusEl.className   = 'rules-status-ok';
             document.getElementById('rules-count').textContent = (data.rule_count || 0) + ' szabaly betoltve';
             showToast('Szabalyok mentve');
             setTimeout(loadRules, 500);
         } else {
-            statusEl.textContent = data.error || 'Parse hiba';
+            // WiFi uses {error:"..."}, BLE uses {message:"..."}
+            const errMsg = data.error || data.message || 'Parse hiba';
+            statusEl.textContent = errMsg;
             statusEl.className   = 'rules-status-error';
-            showToast(data.error || 'Szabaly hiba', true);
+            showToast(errMsg, true);
         }
     } catch (error) {
         statusEl.textContent = 'Kapcsolati hiba';
