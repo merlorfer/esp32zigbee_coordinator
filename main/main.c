@@ -83,6 +83,45 @@ void app_request_mode_switch(void)
     xTaskCreate(do_switch_to_zigbee_mode, "mode_sw", 4096, NULL, 5, NULL);
 }
 
+void app_start_pairing_mode(int duration)
+{
+    if (!s_zigbee_started) {
+        ESP_LOGW(TAG, "app_start_pairing_mode: Zigbee not started");
+        return;
+    }
+
+    esp_err_t ret = zigbee_permit_join(duration);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "app_start_pairing_mode: permit_join failed: %s", esp_err_to_name(ret));
+        led_set_state(LED_STATE_ERROR);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        led_set_state(s_wifi_mode ? LED_STATE_WIFI_ACTIVE : LED_STATE_NORMAL);
+        return;
+    }
+
+    s_pairing_mode = true;
+    led_set_state(LED_STATE_PAIRING);
+    ESP_LOGI(TAG, "Pairing mode started for %d seconds", duration);
+
+    // Create timer on first use
+    if (s_pairing_timer == NULL) {
+        s_pairing_timer = xTimerCreate(
+            "pairing_timer",
+            pdMS_TO_TICKS(duration * 1000),
+            pdFALSE,  // One-shot
+            NULL,
+            pairing_timer_callback
+        );
+    } else {
+        // Adjust period for the requested duration
+        xTimerChangePeriod(s_pairing_timer, pdMS_TO_TICKS(duration * 1000), 0);
+    }
+
+    if (s_pairing_timer != NULL) {
+        xTimerStart(s_pairing_timer, 0);
+    }
+}
+
 static void on_button_short_press(void)
 {
     ESP_LOGI(TAG, "Short press detected");
@@ -168,36 +207,8 @@ static void on_button_long_press(void)
         return;
     }
 
-    // Enable permit join for 60 seconds
-    esp_err_t ret = zigbee_permit_join(ZIGBEE_PERMIT_JOIN_TIME);
-    if (ret == ESP_OK) {
-        s_pairing_mode = true;
-        led_set_state(LED_STATE_PAIRING);
-        ESP_LOGI(TAG, "Zigbee pairing enabled for %d seconds", ZIGBEE_PERMIT_JOIN_TIME);
-
-        // Start timer to auto-disable pairing mode
-        if (s_pairing_timer == NULL) {
-            s_pairing_timer = xTimerCreate(
-                "pairing_timer",
-                pdMS_TO_TICKS(ZIGBEE_PERMIT_JOIN_TIME * 1000),
-                pdFALSE,  // One-shot timer
-                NULL,
-                pairing_timer_callback
-            );
-        }
-        if (s_pairing_timer != NULL) {
-            xTimerStart(s_pairing_timer, 0);
-        }
-    } else {
-        ESP_LOGE(TAG, "Failed to enable Zigbee pairing: %s", esp_err_to_name(ret));
-        led_set_state(LED_STATE_ERROR);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        if (s_wifi_mode) {
-            led_set_state(LED_STATE_WIFI_ACTIVE);
-        } else {
-            led_set_state(LED_STATE_NORMAL);
-        }
-    }
+    // Enable permit join for 60 seconds (shared logic with BLE/WiFi handlers)
+    app_start_pairing_mode(ZIGBEE_PERMIT_JOIN_TIME);
 }
 
 // ============================================================================

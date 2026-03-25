@@ -306,6 +306,7 @@ extern EventGroupHandle_t g_event_group;
 extern QueueHandle_t g_cmd_queue;
 
 void app_request_mode_switch(void);
+void app_start_pairing_mode(int duration);
 extern QueueHandle_t g_led_queue;
 extern QueueHandle_t g_error_queue;
 extern QueueHandle_t g_sensor_data_queue;

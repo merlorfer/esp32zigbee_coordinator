@@ -13,7 +13,6 @@
 #include "local_xkc_sensor.h"
 #include "rules_engine.h"
 #include "zigbee_task.h"
-#include "led_task.h"
 #include "common.h"
 
 #include "esp_log.h"
@@ -595,17 +594,13 @@ static char *handle_permit_join(cJSON *params)
         }
     }
 
-    esp_err_t err = zigbee_permit_join(duration);
+    // app_start_pairing_mode handles LED state + timer reset correctly
+    app_start_pairing_mode(duration);
 
     cJSON *response = cJSON_CreateObject();
-    cJSON_AddStringToObject(response, "status", err == ESP_OK ? "ok" : "error");
-    cJSON_AddStringToObject(response, "message",
-                           err == ESP_OK ? "Pairing enabled" : "Failed to enable pairing");
-
-    if (err == ESP_OK) {
-        cJSON_AddNumberToObject(response, "duration", duration);
-        led_set_state(LED_STATE_PAIRING);
-    }
+    cJSON_AddStringToObject(response, "status", "ok");
+    cJSON_AddStringToObject(response, "message", "Pairing enabled");
+    cJSON_AddNumberToObject(response, "duration", duration);
 
     char *json_str = cJSON_PrintUnformatted(response);
     cJSON_Delete(response);

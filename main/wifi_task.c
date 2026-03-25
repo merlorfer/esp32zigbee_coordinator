@@ -281,7 +281,7 @@ static esp_err_t api_zigbee_permit_join_post_handler(httpd_req_t *req)
     }
 
     ESP_LOGI(TAG, "Permit join requested for %d seconds", duration);
-    zigbee_permit_join(duration);
+    app_start_pairing_mode(duration);
 
     char time_str[32];
     time_t now = time(NULL) + duration;
