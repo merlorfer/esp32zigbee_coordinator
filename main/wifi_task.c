@@ -811,22 +811,6 @@ static esp_err_t api_global_config_get_handler(httpd_req_t *req)
     }
     cJSON_AddItemToObject(response, "valid_xkc_gpios", gpio_array);
 
-    // Local XKC sensor settings
-    cJSON_AddBoolToObject(response, "local_xkc_enabled", config.local_xkc_enabled);
-    cJSON_AddNumberToObject(response, "local_xkc_gpio_lower",
-        config.local_xkc_gpio_lower > 0 ? config.local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER);
-    cJSON_AddNumberToObject(response, "local_xkc_gpio_upper",
-        config.local_xkc_gpio_upper > 0 ? config.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER);
-
-    // Valid GPIO pin list for frontend dropdown
-    uint8_t gpio_count;
-    const uint8_t *valid_gpios = local_xkc_sensor_get_valid_gpios(&gpio_count);
-    cJSON *gpio_array = cJSON_CreateArray();
-    for (uint8_t i = 0; i < gpio_count; i++) {
-        cJSON_AddItemToArray(gpio_array, cJSON_CreateNumber(valid_gpios[i]));
-    }
-    cJSON_AddItemToObject(response, "valid_xkc_gpios", gpio_array);
-
     char *json_str = cJSON_Print(response);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, json_str);
