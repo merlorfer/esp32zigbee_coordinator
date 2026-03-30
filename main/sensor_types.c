@@ -38,7 +38,7 @@ static const sensor_type_info_t s_sensor_types[] = {
         .device_type = DEVICE_TYPE_WATER_LEVEL_SENSOR,
         .cluster_id = 0x0403,  // ESP_ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT
         .type_string = "water_level_sensor",
-        .display_name = "Water Level",
+        .display_name = "WaterLevel",
         .unit = "",
         .zcl_attr_type = ESP_ZB_ZCL_ATTR_TYPE_S16,
         .default_lower_threshold = 1.0f,
@@ -46,6 +46,19 @@ static const sensor_type_info_t s_sensor_types[] = {
         .default_hysteresis = 0.0f,
         .conversion_divisor = 1.0f,
         .is_signed = true,
+    },
+    {
+        .device_type = DEVICE_TYPE_LEAK_SENSOR,
+        .cluster_id = 0x0500,  // ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE
+        .type_string = "leak_sensor",
+        .display_name = "Leak",
+        .unit = "",
+        .zcl_attr_type = ESP_ZB_ZCL_ATTR_TYPE_U16,
+        .default_lower_threshold = 0.5f,  // triggers at 1.0 (alarm)
+        .default_upper_threshold = 0.5f,
+        .default_hysteresis = 0.0f,
+        .conversion_divisor = 1.0f,
+        .is_signed = false,
     },
 };
 

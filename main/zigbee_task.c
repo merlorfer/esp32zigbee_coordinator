@@ -14,6 +14,7 @@
 #include "esp_zigbee_core.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "zcl/esp_zigbee_zcl_common.h"
+#include "zcl/esp_zigbee_zcl_ias_zone.h"
 #include "esp_ieee802154.h"
 #include <string.h>
 #include <inttypes.h>
@@ -557,6 +558,64 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     case ESP_ZB_CORE_REPORT_ATTR_CB_ID:
         return zb_attribute_reporting_handler((esp_zb_zcl_report_attr_message_t *)message);
 
+    case ESP_ZB_CORE_CMD_IAS_ZONE_ZONE_ENROLL_REQUEST_ID:
+        {
+            esp_zb_zcl_ias_zone_enroll_request_message_t *req =
+                (esp_zb_zcl_ias_zone_enroll_request_message_t *)message;
+            ESP_LOGI(TAG, "IAS Zone enroll request from 0x%04x ep=%d, zone_type=0x%04x",
+                     req->info.src_address.u.short_addr, req->info.src_endpoint, req->zone_type);
+
+            esp_zb_zcl_ias_zone_enroll_response_cmd_t resp = {
+                .zcl_basic_cmd = {
+                    .dst_addr_u.addr_short = req->info.src_address.u.short_addr,
+                    .dst_endpoint          = req->info.src_endpoint,
+                    .src_endpoint          = HA_GATEWAY_ENDPOINT,
+                },
+                .address_mode  = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+                .enroll_rsp_code = ESP_ZB_ZCL_IAS_ZONE_ENROLL_RESPONSE_CODE_SUCCESS,
+                .zone_id         = 0,
+            };
+            esp_zb_zcl_ias_zone_enroll_cmd_resp(&resp);
+            ESP_LOGI(TAG, "IAS Zone enroll response sent (success, zone_id=0)");
+        }
+        break;
+
+    case ESP_ZB_CORE_CMD_IAS_ZONE_ZONE_STATUS_CHANGE_NOT_ID:
+        {
+            esp_zb_zcl_ias_zone_status_change_notification_message_t *notif =
+                (esp_zb_zcl_ias_zone_status_change_notification_message_t *)message;
+            uint16_t zone_status = notif->zone_status;
+            bool alarm = (zone_status & ESP_ZB_ZCL_IAS_ZONE_ZONE_STATUS_ALARM1) != 0;
+
+            esp_zb_lock_acquire(portMAX_DELAY);
+            uint8_t ieee_bytes[8];
+            esp_zb_ieee_address_by_short(notif->info.src_address.u.short_addr, ieee_bytes);
+            esp_zb_lock_release();
+            uint64_t ieee_addr = ieee_to_uint64(ieee_bytes);
+
+            ESP_LOGI(TAG, "IAS Zone status change from 0x%04x: zone_status=0x%04x, alarm=%s",
+                     notif->info.src_address.u.short_addr, zone_status, alarm ? "YES" : "NO");
+
+            if (ieee_addr == 0xFFFFFFFFFFFFFFFF || ieee_addr == 0) {
+                request_ieee_for_short(notif->info.src_address.u.short_addr);
+                break;
+            }
+
+            if (g_sensor_data_queue != NULL) {
+                sensor_data_msg_t sensor_msg = {
+                    .ieee_addr  = ieee_addr,
+                    .endpoint   = notif->info.src_endpoint,
+                    .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE,
+                    .raw_value  = (int16_t)(alarm ? 1 : 0),
+                    .timestamp  = (uint32_t)time(NULL),
+                };
+                if (xQueueSend(g_sensor_data_queue, &sensor_msg, pdMS_TO_TICKS(100)) != pdTRUE) {
+                    ESP_LOGW(TAG, "IAS Zone: failed to queue sensor data");
+                }
+            }
+        }
+        break;
+
     default:
         ESP_LOGD(TAG, "Unhandled action callback: %d", callback_id);
         break;
@@ -596,7 +655,11 @@ static void zigbee_task(void *pvParameters)
         esp_zb_attribute_list_t *press_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT);
         esp_zb_cluster_list_add_pressure_meas_cluster(cluster_list, press_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
 
-        ESP_LOGI(TAG, "Added temperature, humidity and pressure client clusters to coordinator");
+        // Add IAS Zone cluster (CLIENT ROLE to send enroll response and receive notifications)
+        esp_zb_attribute_list_t *ias_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE);
+        esp_zb_cluster_list_add_ias_zone_cluster(cluster_list, ias_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
+
+        ESP_LOGI(TAG, "Added temperature, humidity, pressure and IAS Zone client clusters to coordinator");
     } else {
         ESP_LOGW(TAG, "Failed to get cluster list for endpoint");
     }
@@ -1291,6 +1354,9 @@ static void sensor_bind_cb(esp_zb_zdp_status_t status, void *user_ctx)
     if (ctx->cluster_id == 0x0001) {
         /* Battery cluster — fixed intervals, no user config needed */
         configure_battery_reporting(ctx->short_addr, ctx->endpoint);
+    } else if (ctx->cluster_id == ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE) {
+        /* IAS Zone — event-driven (Zone Status Change Notification), no attribute reporting needed */
+        ESP_LOGI(TAG, "IAS Zone bound: notifications will arrive on zone status change");
     } else {
         /* Temperature/humidity — use user-configurable intervals */
         uint16_t min_iv = 0, max_iv = 10;
@@ -1304,6 +1370,42 @@ static void sensor_bind_cb(esp_zb_zdp_status_t status, void *user_ctx)
         configure_sensor_reporting(ctx->short_addr, ctx->endpoint, ctx->cluster_id, min_iv, max_iv, chg);
     }
     free(ctx);
+}
+
+/**
+ * @brief Enroll an IAS Zone sensor: write coordinator IEEE address to IAS_CIE_Address.
+ *        The sensor will then send Zone Enroll Request, coordinator responds in action handler.
+ */
+static void ias_zone_enroll(uint16_t short_addr, uint8_t endpoint)
+{
+    ESP_LOGI(TAG, "IAS Zone enroll: writing CIE address to 0x%04x ep=%d", short_addr, endpoint);
+
+    esp_zb_ieee_addr_t coordinator_ieee;
+    esp_zb_get_long_address(coordinator_ieee);
+
+    esp_zb_zcl_attribute_t attr = {
+        .id   = ESP_ZB_ZCL_ATTR_IAS_ZONE_IAS_CIE_ADDRESS_ID,  // 0x0010
+        .data = {
+            .type  = ESP_ZB_ZCL_ATTR_TYPE_IEEE_ADDR,
+            .value = coordinator_ieee,
+        },
+    };
+
+    esp_zb_zcl_write_attr_cmd_t cmd = {
+        .zcl_basic_cmd = {
+            .dst_addr_u.addr_short = short_addr,
+            .dst_endpoint          = endpoint,
+            .src_endpoint          = HA_GATEWAY_ENDPOINT,
+        },
+        .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+        .clusterID    = ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE,
+        .attr_number  = 1,
+        .attr_field   = &attr,
+    };
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_write_attr_cmd_req(&cmd);
+    esp_zb_lock_release();
 }
 
 /**
@@ -1442,6 +1544,9 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "%s sensor added successfully", sinfo->display_name);
             device_added = true;
+            if (sinfo->cluster_id == ESP_ZB_ZCL_CLUSTER_ID_IAS_ZONE) {
+                ias_zone_enroll(s_pending_discovery.short_addr, endpoint);
+            }
             bind_sensor(s_pending_discovery.short_addr, endpoint, sinfo->cluster_id);
         } else if (ret == ESP_ERR_INVALID_STATE) {
             ESP_LOGI(TAG, "%s sensor already exists", sinfo->display_name);

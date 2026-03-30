@@ -1,0 +1,99 @@
+// ============================================================
+// Ebb & Flow (Elarasztas-Leeresztes) automatizacio
+// ============================================================
+//
+// Valtozok (Web UI -> Rules -> Valtozok):
+//   var1 = elarasztas idolimit (masodperc)   pl. 900 = 15 perc
+//   var2 = varakozas leeresztes elott (mp)   pl. 300 = 5 perc
+//   var3 = leeresztes idolimit (masodperc)   pl. 600 = 10 perc
+//   var4 = allapotjelzo (ne modositsd kezzel!)
+//            0 = tetlen
+//            1 = elarasztas aktiv
+//            2 = varakozas leeresztes elott (vizszint teli volt)
+//            3 = leeresztes aktiv
+//
+// Eszkozok (nevnek egyeznie kell a Device Manager-rel):
+//   pump1       = elaraszto szivattyu
+//   pump2       = leereszto szivattyu
+//   WLSensor    = vizszint szenzor (0=ures, 1=alacsony, 2=tele)
+//   WLeakSensor = vizszivargas szenzor (0=szaraz, 1=szivargas)
+//
+// Idopontok: cserelld ki a 06:00 es 14:00 ertekeket.
+// Tobb idoponthoz masold meg az "on time" blokkot.
+// ============================================================
+
+// --- BOOT: allapot visszaallitas ---
+on boot do
+  set var4 0
+  off pump1
+  off pump2
+endon
+
+// --- ELARASZTAS INDITASA (1. idopont) ---
+on time 06:00 do
+  if [var4] == 0
+    on pump1
+    timerSet 1 [var1]
+    set var4 1
+  endif
+endon
+
+// --- ELARASZTAS INDITASA (2. idopont) ---
+on time 14:00 do
+  if [var4] == 0
+    on pump1
+    timerSet 1 [var1]
+    set var4 1
+  endif
+endon
+
+// --- VIZSZINT VALTOZAS KEZELESE ---
+// Ha vizszint elerte a 2-t elarasztas kozben: pump1 le, varakozas indul
+// Ha vizszint elerte a 0-t leeresztes kozben: pump2 le, kesz
+on WLSensor do
+  if [WLSensor] >= 2 and [var4] == 1
+    off pump1
+    timerCancel 1
+    timerSet 2 [var2]
+    set var4 2
+  endif
+  if [WLSensor] <= 0 and [var4] == 3
+    off pump2
+    timerCancel 3
+    set var4 0
+  endif
+endon
+
+// --- VIZSZIVARGAS: VESZLEALLITAS (csak elarasztas kozben) ---
+on WLeakSensor do
+  if [WLeakSensor] >= 1 and [var4] == 1
+    off pump1
+    timerCancel 1
+    set var4 0
+  endif
+endon
+
+// --- ELARASZTAS IDOLIMIT LEJART (vizszint nem erte el a 2-t) ---
+on timer1 do
+  if [var4] == 1
+    off pump1
+    set var4 0
+  endif
+endon
+
+// --- VARAKOZAS LEJART: LEERESZTES INDITASA ---
+on timer2 do
+  if [var4] == 2
+    on pump2
+    timerSet 3 [var3]
+    set var4 3
+  endif
+endon
+
+// --- LEERESZTES IDOLIMIT LEJART (vizszint nem erte el a 0-t) ---
+on timer3 do
+  if [var4] == 3
+    off pump2
+    set var4 0
+  endif
+endon

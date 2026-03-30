@@ -113,6 +113,66 @@ esp_err_t nvs_save_device_count(uint8_t count);
  */
 esp_err_t nvs_load_device_count(uint8_t *count);
 
+/* ============================================================================
+ * Rules Engine NVS Functions
+ * ============================================================================ */
+
+/**
+ * @brief Save rules text to NVS
+ * @param text Rules text string
+ * @param len Length of text (excluding null terminator)
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_save_rules_text(const char *text, size_t len);
+
+/**
+ * @brief Load rules text from NVS
+ * @param text Buffer to store loaded text
+ * @param len Pointer to buffer size (in), actual length loaded (out)
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_load_rules_text(char *text, size_t *len);
+
+/**
+ * @brief Save rules variables to NVS
+ * @param vars Array of float variables
+ * @param count Number of variables
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_save_rules_vars(const float *vars, uint8_t count);
+
+/**
+ * @brief Load rules variables from NVS
+ * @param vars Array to store variables
+ * @param count Number of variables to load
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_load_rules_vars(float *vars, uint8_t count);
+
+/**
+ * @brief Save rules variable config (persist mask + defaults) to NVS
+ * @param persist_mask Bitmask: bit i = 1 means var[i] is persistent
+ * @param defaults Array of default values for non-persistent variables
+ * @param count Number of variables
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_save_rules_var_config(uint8_t persist_mask, const float *defaults, uint8_t count);
+
+/**
+ * @brief Load rules variable config from NVS
+ * @param persist_mask Output bitmask
+ * @param defaults Output array of default values
+ * @param count Number of variables
+ * @return ESP_OK on success, ESP_ERR_NVS_NOT_FOUND if not stored yet
+ */
+esp_err_t nvs_load_rules_var_config(uint8_t *persist_mask, float *defaults, uint8_t count);
+
+/**
+ * @brief Erase all rules data from NVS (factory reset)
+ * @return ESP_OK on success
+ */
+esp_err_t nvs_erase_rules(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -221,8 +221,16 @@ esp_err_t local_xkc_sensor_start(uint8_t gpio_lower, uint8_t gpio_upper)
 
 esp_err_t local_xkc_sensor_stop(void)
 {
+    // Always remove the virtual device if it exists in device_manager,
+    // even when s_active is false (e.g. after reboot in setup mode the
+    // timer was never started but the device is still loaded from NVS).
+    int idx = device_manager_find_index_by_type(LOCAL_XKC_IEEE_ADDR, DEVICE_TYPE_WATER_LEVEL_SENSOR);
+    if (idx >= 0) {
+        device_manager_remove(LOCAL_XKC_IEEE_ADDR);
+    }
+
     if (!s_active) {
-        return ESP_OK;  // Already stopped, not an error
+        return ESP_OK;  // No timer/GPIO resources to clean up
     }
 
     // Stop and delete timer
@@ -235,12 +243,6 @@ esp_err_t local_xkc_sensor_stop(void)
     // Reset GPIO pins to safe state
     gpio_reset_pin(s_gpio_lower);
     gpio_reset_pin(s_gpio_upper);
-
-    // Remove virtual device from device_manager
-    int idx = device_manager_find_index_by_type(LOCAL_XKC_IEEE_ADDR, DEVICE_TYPE_WATER_LEVEL_SENSOR);
-    if (idx >= 0) {
-        device_manager_remove(LOCAL_XKC_IEEE_ADDR);
-    }
 
     s_active = false;
     s_last_level = -1;

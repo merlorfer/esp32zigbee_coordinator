@@ -320,3 +320,200 @@ esp_err_t nvs_load_device_count(uint8_t *count)
 
     return ret;
 }
+
+/* ============================================================================
+ * Rules Engine NVS Functions
+ * ============================================================================ */
+
+#define NVS_NAMESPACE_RULES     "rules"
+#define NVS_KEY_RULES_TEXT      "rules_txt"
+#define NVS_KEY_RULES_VARS      "rules_vars"
+#define NVS_KEY_RULES_VCFG      "rules_vcfg"
+
+typedef struct {
+    uint8_t persist_mask;
+    float   defaults[8];
+} rules_var_config_nvs_t;
+
+esp_err_t nvs_save_rules_text(const char *text, size_t len)
+{
+    if (text == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE_RULES, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open rules namespace: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = nvs_set_blob(handle, NVS_KEY_RULES_TEXT, text, len + 1);  // +1 for null terminator
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Rules text saved (%d bytes)", (int)len);
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to save rules text: %s", esp_err_to_name(ret));
+    }
+
+    nvs_close(handle);
+    return ret;
+}
+
+esp_err_t nvs_load_rules_text(char *text, size_t *len)
+{
+    if (text == NULL || len == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE_RULES, NVS_READONLY, &handle);
+    if (ret != ESP_OK) {
+        text[0] = '\0';
+        *len = 0;
+        return ret;
+    }
+
+    ret = nvs_get_blob(handle, NVS_KEY_RULES_TEXT, text, len);
+    nvs_close(handle);
+
+    if (ret != ESP_OK) {
+        text[0] = '\0';
+        *len = 0;
+    }
+
+    return ret;
+}
+
+esp_err_t nvs_save_rules_vars(const float *vars, uint8_t count)
+{
+    if (vars == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE_RULES, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = nvs_set_blob(handle, NVS_KEY_RULES_VARS, vars, count * sizeof(float));
+    if (ret == ESP_OK) {
+        nvs_commit(handle);
+        ESP_LOGI(TAG, "Rules vars saved");
+    } else {
+        ESP_LOGE(TAG, "Failed to save rules vars: %s", esp_err_to_name(ret));
+    }
+
+    nvs_close(handle);
+    return ret;
+}
+
+esp_err_t nvs_load_rules_vars(float *vars, uint8_t count)
+{
+    if (vars == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(vars, 0, count * sizeof(float));
+
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE_RULES, NVS_READONLY, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    size_t size = count * sizeof(float);
+    ret = nvs_get_blob(handle, NVS_KEY_RULES_VARS, vars, &size);
+    nvs_close(handle);
+
+    return ret;
+}
+
+esp_err_t nvs_save_rules_var_config(uint8_t persist_mask, const float *defaults, uint8_t count)
+{
+    if (defaults == NULL || count > 8) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    rules_var_config_nvs_t cfg;
+    cfg.persist_mask = persist_mask;
+    memset(cfg.defaults, 0, sizeof(cfg.defaults));
+    memcpy(cfg.defaults, defaults, count * sizeof(float));
+
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE_RULES, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = nvs_set_blob(handle, NVS_KEY_RULES_VCFG, &cfg, sizeof(cfg));
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Rules var config saved (mask=0x%02X)", persist_mask);
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to save rules var config: %s", esp_err_to_name(ret));
+    }
+
+    nvs_close(handle);
+    return ret;
+}
+
+esp_err_t nvs_load_rules_var_config(uint8_t *persist_mask, float *defaults, uint8_t count)
+{
+    if (persist_mask == NULL || defaults == NULL || count > 8) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Defaults: all persist, all default=0
+    *persist_mask = 0xFF;
+    memset(defaults, 0, count * sizeof(float));
+
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE_RULES, NVS_READONLY, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    rules_var_config_nvs_t cfg;
+    size_t size = sizeof(cfg);
+    ret = nvs_get_blob(handle, NVS_KEY_RULES_VCFG, &cfg, &size);
+    nvs_close(handle);
+
+    if (ret == ESP_OK) {
+        *persist_mask = cfg.persist_mask;
+        memcpy(defaults, cfg.defaults, count * sizeof(float));
+        ESP_LOGI(TAG, "Rules var config loaded (mask=0x%02X)", cfg.persist_mask);
+    } else if (ret == ESP_ERR_NVS_NOT_FOUND) {
+        // Not stored yet - use defaults (backward compatible)
+        ret = ESP_ERR_NVS_NOT_FOUND;
+    }
+
+    return ret;
+}
+
+esp_err_t nvs_erase_rules(void)
+{
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE_RULES, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = nvs_erase_all(handle);
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Rules NVS erased (factory reset)");
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to erase rules NVS: %s", esp_err_to_name(ret));
+    }
+
+    nvs_close(handle);
+    return ret;
+}

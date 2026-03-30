@@ -116,7 +116,7 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
         strncpy(dev->model, model, MAX_MODEL_LEN - 1);
     }
 
-    snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "Device %d", s_device_count + 1);
+    snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "Device%d", s_device_count + 1);
 
     s_device_count++;
     s_global_config.device_count = s_device_count;
@@ -138,8 +138,7 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
 
 esp_err_t device_manager_remove(uint64_t ieee_addr)
 {
-    int index = device_manager_find_index(ieee_addr);
-    if (index < 0) {
+    if (device_manager_find_index(ieee_addr) < 0) {
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -147,25 +146,37 @@ esp_err_t device_manager_remove(uint64_t ieee_addr)
         xSemaphoreTake(g_device_mutex, portMAX_DELAY);
     }
 
-    // Shift remaining devices down
-    for (int i = index; i < s_device_count - 1; i++) {
-        memcpy(&s_devices[i], &s_devices[i + 1], sizeof(device_config_t));
-        memcpy(&s_errors[i], &s_errors[i + 1], sizeof(device_error_t));
+    // Remove ALL entries with this IEEE address (multi-endpoint devices register multiple entries)
+    uint8_t removed = 0;
+    int i = 0;
+    while (i < s_device_count) {
+        if (s_devices[i].ieee_addr == ieee_addr) {
+            // Shift remaining devices down
+            for (int j = i; j < s_device_count - 1; j++) {
+                memcpy(&s_devices[j], &s_devices[j + 1], sizeof(device_config_t));
+                memcpy(&s_errors[j], &s_errors[j + 1], sizeof(device_error_t));
+            }
+            memset(&s_devices[s_device_count - 1], 0, sizeof(device_config_t));
+            memset(&s_errors[s_device_count - 1], 0, sizeof(device_error_t));
+            s_device_count--;
+            removed++;
+            // Don't increment i — recheck same index after shift
+        } else {
+            i++;
+        }
     }
 
-    // Clear last slot
-    memset(&s_devices[s_device_count - 1], 0, sizeof(device_config_t));
-    memset(&s_errors[s_device_count - 1], 0, sizeof(device_error_t));
-
-    s_device_count--;
     s_global_config.device_count = s_device_count;
 
     // Save all devices to NVS (indices changed)
-    for (uint8_t i = 0; i < s_device_count; i++) {
-        nvs_save_device(i, &s_devices[i]);
-        nvs_save_error(i, &s_errors[i]);
+    for (uint8_t k = 0; k < s_device_count; k++) {
+        nvs_save_device(k, &s_devices[k]);
+        nvs_save_error(k, &s_errors[k]);
     }
-    nvs_delete_device(s_device_count);
+    // Delete NVS slots that are now beyond the new count
+    for (uint8_t k = s_device_count; k < s_device_count + removed; k++) {
+        nvs_delete_device(k);
+    }
     nvs_save_device_count(s_device_count);
     nvs_save_global_config(&s_global_config);
 
@@ -173,8 +184,8 @@ esp_err_t device_manager_remove(uint64_t ieee_addr)
         xSemaphoreGive(g_device_mutex);
     }
 
-    ESP_LOGI(TAG, "Removed device at index %d, %d devices remaining",
-             index, s_device_count);
+    ESP_LOGI(TAG, "Removed %d device(s) with IEEE addr, %d devices remaining",
+             removed, s_device_count);
     return ESP_OK;
 }
 
@@ -461,7 +472,21 @@ esp_err_t device_manager_add_sensor(uint64_t ieee_addr, uint8_t endpoint,
     dev->sensor.upper_hysteresis = defaults ? defaults->default_hysteresis : 0.5f;
     dev->sensor.lower_linked_device = 0;  // Unassigned
     dev->sensor.upper_linked_device = 0;  // Unassigned
-    dev->sensor.timeout_seconds = 60;  // Increased from 30 to 60 seconds
+    // Event-driven sensors (IAS Zone / leak) use timeout_seconds=0 (disabled)
+    dev->sensor.timeout_seconds = (device_type == DEVICE_TYPE_LEAK_SENSOR) ? 0 : 60;
+
+    // Error handling defaults
+    dev->sensor.error_linked_device = 0;   // Unassigned
+    dev->sensor.error_action_on = false;   // OFF on error
+
+    // Report configuration defaults
+    dev->sensor.report_min_interval = 0;   // Min 0 seconds
+    dev->sensor.report_max_interval = 10;  // Max 10 seconds
+    dev->sensor.report_change = 50;        // 0.50 unit change
+
+    // Delay defaults (0 = immediate, backward compatible)
+    dev->sensor.lower_delay_seconds = 0;
+    dev->sensor.upper_delay_seconds = 0;
 
     // Error handling defaults
     dev->sensor.error_linked_device = 0;   // Unassigned
@@ -503,7 +528,7 @@ esp_err_t device_manager_add_sensor(uint64_t ieee_addr, uint8_t endpoint,
 
     const sensor_type_info_t *type_info = sensor_type_get_info(device_type);
     const char *type_str = type_info ? type_info->display_name : "Unknown";
-    snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "%s Sensor %d", type_str, s_device_count + 1);
+    snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "%sSensor%d", type_str, s_device_count + 1);
 
     s_device_count++;
     s_global_config.device_count = s_device_count;

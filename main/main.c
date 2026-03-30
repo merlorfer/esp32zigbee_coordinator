@@ -23,6 +23,8 @@
 #include "zigbee_task.h"
 #include "scheduler_task.h"
 #include "local_xkc_sensor.h"
+#include "log_manager.h"
+#include "rules_engine.h"
 
 static const char *TAG = "MAIN";
 
@@ -67,6 +69,59 @@ static void pairing_timer_callback(TimerHandle_t timer)
 
 static bool s_zigbee_started = false;  // Track if Zigbee task was ever started
 
+static void on_button_short_press(void);
+
+static void do_switch_to_zigbee_mode(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(300)); // wait for HTTP response to be sent
+    on_button_short_press();
+    vTaskDelete(NULL);
+}
+
+void app_request_mode_switch(void)
+{
+    xTaskCreate(do_switch_to_zigbee_mode, "mode_sw", 4096, NULL, 5, NULL);
+}
+
+void app_start_pairing_mode(int duration)
+{
+    if (!s_zigbee_started) {
+        ESP_LOGW(TAG, "app_start_pairing_mode: Zigbee not started");
+        return;
+    }
+
+    esp_err_t ret = zigbee_permit_join(duration);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "app_start_pairing_mode: permit_join failed: %s", esp_err_to_name(ret));
+        led_set_state(LED_STATE_ERROR);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        led_set_state(s_wifi_mode ? LED_STATE_WIFI_ACTIVE : LED_STATE_NORMAL);
+        return;
+    }
+
+    s_pairing_mode = true;
+    led_set_state(LED_STATE_PAIRING);
+    ESP_LOGI(TAG, "Pairing mode started for %d seconds", duration);
+
+    // Create timer on first use
+    if (s_pairing_timer == NULL) {
+        s_pairing_timer = xTimerCreate(
+            "pairing_timer",
+            pdMS_TO_TICKS(duration * 1000),
+            pdFALSE,  // One-shot
+            NULL,
+            pairing_timer_callback
+        );
+    } else {
+        // Adjust period for the requested duration
+        xTimerChangePeriod(s_pairing_timer, pdMS_TO_TICKS(duration * 1000), 0);
+    }
+
+    if (s_pairing_timer != NULL) {
+        xTimerStart(s_pairing_timer, 0);
+    }
+}
+
 static void on_button_short_press(void)
 {
     ESP_LOGI(TAG, "Short press detected");
@@ -81,13 +136,11 @@ static void on_button_short_press(void)
     }
 
     if (s_setup_mode) {
-        // Setup mode → Operational mode (WiFi+BLE → Zigbee)
+        // Setup mode → Operational mode (WiFi → Zigbee+BLE)
         ESP_LOGI(TAG, "Exiting setup mode, starting Zigbee operational mode");
 
         wifi_task_stop();
-        ble_task_stop();
         s_wifi_mode = false;
-        s_ble_mode = false;
         s_setup_mode = false;
 
         // Clear any old commands in the queue
@@ -130,48 +183,9 @@ static void on_button_short_press(void)
 
         led_set_state(LED_STATE_NORMAL);
         xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
-        xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT | EVENT_BLE_MODE_BIT);
+        xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT);
 
-        ESP_LOGI(TAG, "Now in Zigbee operational mode");
-    } else if (!s_ble_mode) {
-        // Zigbee only → BLE config mode (PAUSE Zigbee to avoid crash)
-        ESP_LOGI(TAG, "Starting BLE configuration mode - pausing Zigbee scheduler");
-
-        // Pause scheduler to prevent Zigbee commands during BLE mode
-        scheduler_task_stop();
-
-        // Small delay to let Zigbee complete current operations
-        vTaskDelay(pdMS_TO_TICKS(100));
-
-        // Send configure_report commands to wake up sleeping sensors
-        // User can press sensor button during this ~2.5 second window
-        //ESP_LOGI(TAG, "Reconfiguring sensors (wake sleeping sensors now!)");
-        //zigbee_reconfigure_all_sensors();
-
-        // Read current sensor values
-        //ESP_LOGI(TAG, "Reading sensor data");
-        //zigbee_read_all_sensor_data();
-
-        // Small delay before starting BLE
-//vTaskDelay(pdMS_TO_TICKS(100));
-
-        ble_task_start();
-        s_ble_mode = true;
-        led_set_state(LED_STATE_BLE_ACTIVE);
-        xEventGroupSetBits(g_event_group, EVENT_BLE_MODE_BIT);
-        ESP_LOGI(TAG, "BLE configuration mode active (scheduler paused)");
-    } else {
-        // BLE → Zigbee only mode
-        ESP_LOGI(TAG, "Stopping BLE, returning to automation mode");
-        ble_task_stop();
-        s_ble_mode = false;
-
-        // Restart scheduler
-        scheduler_task_start();
-
-        led_set_state(LED_STATE_NORMAL);
-        xEventGroupClearBits(g_event_group, EVENT_BLE_MODE_BIT);
-        ESP_LOGI(TAG, "Back to Zigbee automation mode (scheduler resumed)");
+        ESP_LOGI(TAG, "Now in Zigbee operational mode (BLE remains active)");
     }
 }
 
@@ -193,36 +207,8 @@ static void on_button_long_press(void)
         return;
     }
 
-    // Enable permit join for 60 seconds
-    esp_err_t ret = zigbee_permit_join(ZIGBEE_PERMIT_JOIN_TIME);
-    if (ret == ESP_OK) {
-        s_pairing_mode = true;
-        led_set_state(LED_STATE_PAIRING);
-        ESP_LOGI(TAG, "Zigbee pairing enabled for %d seconds", ZIGBEE_PERMIT_JOIN_TIME);
-
-        // Start timer to auto-disable pairing mode
-        if (s_pairing_timer == NULL) {
-            s_pairing_timer = xTimerCreate(
-                "pairing_timer",
-                pdMS_TO_TICKS(ZIGBEE_PERMIT_JOIN_TIME * 1000),
-                pdFALSE,  // One-shot timer
-                NULL,
-                pairing_timer_callback
-            );
-        }
-        if (s_pairing_timer != NULL) {
-            xTimerStart(s_pairing_timer, 0);
-        }
-    } else {
-        ESP_LOGE(TAG, "Failed to enable Zigbee pairing: %s", esp_err_to_name(ret));
-        led_set_state(LED_STATE_ERROR);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        if (s_wifi_mode) {
-            led_set_state(LED_STATE_WIFI_ACTIVE);
-        } else {
-            led_set_state(LED_STATE_NORMAL);
-        }
-    }
+    // Enable permit join for 60 seconds (shared logic with BLE/WiFi handlers)
+    app_start_pairing_mode(ZIGBEE_PERMIT_JOIN_TIME);
 }
 
 // ============================================================================
@@ -286,6 +272,9 @@ static esp_err_t init_globals(void)
 
 void app_main(void)
 {
+    // Initialize log manager FIRST — captures all subsequent boot logs
+    log_manager_init();
+
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "ESP32-C6 Zigbee Gateway & Automation Center");
     ESP_LOGI(TAG, "========================================");
@@ -298,6 +287,17 @@ void app_main(void)
 
     // Initialize device manager (loads saved devices)
     ESP_ERROR_CHECK(device_manager_init());
+
+    // Apply persisted log filter and rules enabled state
+    {
+        global_config_t gconfig;
+        device_manager_get_global_config(&gconfig);
+        if (gconfig.log_zigbee_only) {
+            log_manager_set_filter(true);
+        }
+        // rules_enabled defaults to true; only disable if explicitly set false
+        rules_engine_set_enabled(gconfig.rules_enabled);
+    }
 
     // Initialize LED task
     ESP_ERROR_CHECK(led_task_init());

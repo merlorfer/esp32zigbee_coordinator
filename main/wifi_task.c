@@ -4,9 +4,11 @@
  */
 
 #include "wifi_task.h"
+#include "log_manager.h"
 #include "device_manager.h"
 #include "sensor_types.h"
 #include "local_xkc_sensor.h"
+#include "rules_engine.h"
 #include "zigbee_task.h"
 #include "led_task.h"
 #include "nvs_manager.h"
@@ -17,7 +19,10 @@
 #include "esp_spiffs.h"
 #include "esp_netif.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
+#include "esp_system.h"
 #include "cJSON.h"
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
@@ -275,8 +280,8 @@ static esp_err_t api_zigbee_permit_join_post_handler(httpd_req_t *req)
         cJSON_Delete(root);
     }
 
-    // TODO: Send permit join command to Zigbee task
     ESP_LOGI(TAG, "Permit join requested for %d seconds", duration);
+    app_start_pairing_mode(duration);
 
     char time_str[32];
     time_t now = time(NULL) + duration;
@@ -618,6 +623,29 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
         if (cJSON_IsNumber(item)) dev.sensor.upper_delay_seconds = (uint16_t)item->valueint;
     }
 
+    // Direct device command (on/off/toggle) — send to queue and return early
+    item = cJSON_GetObjectItem(root, "cmd");
+    if (cJSON_IsString(item)) {
+        const char *cmd_str = item->valuestring;
+        cmd_queue_msg_t msg = {
+            .ieee_addr = ieee_addr,
+            .endpoint  = dev.endpoint,
+            .cmd       = CMD_ON
+        };
+        if (strcmp(cmd_str, "off") == 0)    msg.cmd = CMD_OFF;
+        else if (strcmp(cmd_str, "toggle") == 0) msg.cmd = CMD_TOGGLE;
+        xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+        cJSON_Delete(root);
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddBoolToObject(resp, "success", true);
+        char *js = cJSON_Print(resp);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, js);
+        free(js);
+        cJSON_Delete(resp);
+        return ESP_OK;
+    }
+
     cJSON_Delete(root);
 
     ESP_LOGI(TAG, "Saving config: mode=%d, enabled=%d, delay_off1=%lu, delay_dur=%lu, delay_off2=%lu",
@@ -748,9 +776,11 @@ static esp_err_t api_wifi_shutdown_post_handler(httpd_req_t *req)
     free(json_str);
     cJSON_Delete(response);
 
-    // Schedule Wi-Fi stop after response is sent
-    xEventGroupSetBits(g_event_group, EVENT_ZIGBEE_MODE_BIT);
-    xEventGroupClearBits(g_event_group, EVENT_WIFI_MODE_BIT);
+    // Persist logs before WiFi/HTTP shuts down
+    log_manager_flush();
+
+    // Trigger full mode switch in a separate task (mirrors physical button press)
+    app_request_mode_switch();
 
     return ESP_OK;
 }
@@ -762,6 +792,24 @@ static esp_err_t api_global_config_get_handler(httpd_req_t *req)
 
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "wifi_on_behavior", config.wifi_on_behavior);
+    cJSON_AddBoolToObject(response, "log_zigbee_only", config.log_zigbee_only);
+    cJSON_AddBoolToObject(response, "rules_enabled", config.rules_enabled);
+
+    // Local XKC sensor settings
+    cJSON_AddBoolToObject(response, "local_xkc_enabled", config.local_xkc_enabled);
+    cJSON_AddNumberToObject(response, "local_xkc_gpio_lower",
+        config.local_xkc_gpio_lower > 0 ? config.local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER);
+    cJSON_AddNumberToObject(response, "local_xkc_gpio_upper",
+        config.local_xkc_gpio_upper > 0 ? config.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER);
+
+    // Valid GPIO pin list for frontend dropdown
+    uint8_t gpio_count;
+    const uint8_t *valid_gpios = local_xkc_sensor_get_valid_gpios(&gpio_count);
+    cJSON *gpio_array = cJSON_CreateArray();
+    for (uint8_t i = 0; i < gpio_count; i++) {
+        cJSON_AddItemToArray(gpio_array, cJSON_CreateNumber(valid_gpios[i]));
+    }
+    cJSON_AddItemToObject(response, "valid_xkc_gpios", gpio_array);
 
     // Local XKC sensor settings
     cJSON_AddBoolToObject(response, "local_xkc_enabled", config.local_xkc_enabled);
@@ -810,6 +858,18 @@ static esp_err_t api_global_config_post_handler(httpd_req_t *req)
     cJSON *item = cJSON_GetObjectItem(root, "wifi_on_behavior");
     if (cJSON_IsBool(item)) {
         config.wifi_on_behavior = cJSON_IsTrue(item);
+    }
+
+    item = cJSON_GetObjectItem(root, "log_zigbee_only");
+    if (cJSON_IsBool(item)) {
+        config.log_zigbee_only = cJSON_IsTrue(item);
+        log_manager_set_filter(config.log_zigbee_only);
+    }
+
+    item = cJSON_GetObjectItem(root, "rules_enabled");
+    if (cJSON_IsBool(item)) {
+        config.rules_enabled = cJSON_IsTrue(item);
+        rules_engine_set_enabled(config.rules_enabled);
     }
 
     // Local XKC sensor settings
@@ -863,9 +923,8 @@ static esp_err_t api_global_config_post_handler(httpd_req_t *req)
 
     device_manager_set_global_config(&config);
 
-    // Handle XKC sensor start/stop if in Zigbee operational mode
-    EventBits_t bits = xEventGroupGetBits(g_event_group);
-    if (bits & EVENT_ZIGBEE_MODE_BIT) {
+    // Handle XKC sensor start/stop (any mode)
+    {
         bool gpio_changed = (config.local_xkc_gpio_lower != old_gpio_lower ||
                             config.local_xkc_gpio_upper != old_gpio_upper);
 
@@ -896,6 +955,26 @@ static esp_err_t api_global_config_post_handler(httpd_req_t *req)
 
     free(json_str);
     cJSON_Delete(response);
+    return ESP_OK;
+}
+
+static void reboot_timer_cb(void *arg) { esp_restart(); }
+
+static esp_err_t api_reboot_handler(httpd_req_t *req)
+{
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", true);
+    cJSON_AddStringToObject(response, "message", "Ujrainditas...");
+    char *json_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+    free(json_str);
+    cJSON_Delete(response);
+
+    esp_timer_handle_t t;
+    esp_timer_create_args_t args = { .callback = reboot_timer_cb, .name = "reboot" };
+    esp_timer_create(&args, &t);
+    esp_timer_start_once(t, 500000); // 500ms
     return ESP_OK;
 }
 
@@ -943,6 +1022,362 @@ static esp_err_t api_factory_reset_handler(httpd_req_t *req)
 }
 
 // ============================================================================
+// Rules API Handlers
+// ============================================================================
+
+static esp_err_t api_rules_get_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddStringToObject(root, "text", rules_engine_get_text());
+
+    // Variables
+    cJSON *vars = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        cJSON_AddItemToArray(vars, cJSON_CreateNumber(rules_engine_get_var(i)));
+    }
+    cJSON_AddItemToObject(root, "variables", vars);
+
+    // Variable config (persist + default)
+    cJSON *var_config = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        bool persist;
+        float def_val;
+        rules_engine_get_var_config((uint8_t)i, &persist, &def_val);
+        cJSON *vc = cJSON_CreateObject();
+        cJSON_AddBoolToObject(vc, "persist", persist);
+        cJSON_AddNumberToObject(vc, "default", def_val);
+        cJSON_AddItemToArray(var_config, vc);
+    }
+    cJSON_AddItemToObject(root, "var_config", var_config);
+
+    // Timers
+    cJSON *timers = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_TIMERS; i++) {
+        bool active;
+        int32_t remaining;
+        rules_engine_get_timer_state(i, &active, &remaining);
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddNumberToObject(t, "id", i + 1);
+        cJSON_AddBoolToObject(t, "active", active);
+        cJSON_AddNumberToObject(t, "remaining", remaining);
+        cJSON_AddItemToArray(timers, t);
+    }
+    cJSON_AddItemToObject(root, "timers", timers);
+
+    cJSON_AddNumberToObject(root, "rule_count", rules_engine_get_rule_count());
+
+    char *json_str = cJSON_Print(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t api_rules_timers_get_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *timers = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_TIMERS; i++) {
+        bool active;
+        int32_t remaining;
+        rules_engine_get_timer_state(i, &active, &remaining);
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddNumberToObject(t, "id", i + 1);
+        cJSON_AddBoolToObject(t, "active", active);
+        cJSON_AddNumberToObject(t, "remaining", remaining);
+        cJSON_AddItemToArray(timers, t);
+    }
+    cJSON_AddItemToObject(root, "timers", timers);
+    char *json_str = cJSON_Print(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+    free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t api_rules_post_handler(httpd_req_t *req)
+{
+    // Read request body - rules text can be up to 2KB + JSON overhead
+    char *buf = malloc(MAX_RULES_TEXT_SIZE + 128);
+    if (buf == NULL) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    int total_len = 0;
+    int remaining = req->content_len;
+    while (remaining > 0) {
+        int ret = httpd_req_recv(req, buf + total_len,
+                                 (remaining < 512) ? remaining : 512);
+        if (ret <= 0) {
+            free(buf);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        total_len += ret;
+        remaining -= ret;
+    }
+    buf[total_len] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *text_obj = cJSON_GetObjectItem(root, "text");
+    if (!cJSON_IsString(text_obj)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing 'text' field");
+        return ESP_FAIL;
+    }
+
+    esp_err_t ret = rules_engine_load_text(text_obj->valuestring);
+
+    cJSON *response = cJSON_CreateObject();
+    if (ret == ESP_OK) {
+        // Save to NVS on successful parse
+        rules_engine_save();
+        cJSON_AddBoolToObject(response, "ok", true);
+        cJSON_AddNumberToObject(response, "rule_count", rules_engine_get_rule_count());
+    } else {
+        cJSON_AddBoolToObject(response, "ok", false);
+        cJSON_AddStringToObject(response, "error", rules_engine_get_parse_error());
+    }
+
+    cJSON_Delete(root);
+
+    char *json_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(response);
+    return ESP_OK;
+}
+
+static esp_err_t api_rules_var_post_handler(httpd_req_t *req)
+{
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *index_obj = cJSON_GetObjectItem(root, "index");
+    cJSON *value_obj = cJSON_GetObjectItem(root, "value");
+    if (!cJSON_IsNumber(index_obj) || !cJSON_IsNumber(value_obj)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing index/value");
+        return ESP_FAIL;
+    }
+
+    int index = index_obj->valueint;
+    float value = (float)value_obj->valuedouble;
+    cJSON_Delete(root);
+
+    if (index < 0 || index >= MAX_RULE_VARIABLES) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid variable index");
+        return ESP_FAIL;
+    }
+
+    rules_engine_set_var((uint8_t)index, value);
+    rules_engine_save();
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", true);
+
+    char *json_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(response);
+    return ESP_OK;
+}
+
+static esp_err_t api_rules_varconfig_post_handler(httpd_req_t *req)
+{
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *index_obj = cJSON_GetObjectItem(root, "index");
+    cJSON *persist_obj = cJSON_GetObjectItem(root, "persist");
+    cJSON *default_obj = cJSON_GetObjectItem(root, "default_value");
+    if (!cJSON_IsNumber(index_obj) || !cJSON_IsBool(persist_obj) || !cJSON_IsNumber(default_obj)) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing index/persist/default_value");
+        return ESP_FAIL;
+    }
+
+    int index = index_obj->valueint;
+    bool persist = cJSON_IsTrue(persist_obj);
+    float def_val = (float)default_obj->valuedouble;
+    cJSON_Delete(root);
+
+    if (index < 0 || index >= MAX_RULE_VARIABLES) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid variable index");
+        return ESP_FAIL;
+    }
+
+    rules_engine_set_var_config((uint8_t)index, persist, def_val);
+    rules_engine_save_var_config();
+
+    // For non-persistent variables, immediately apply the default as the runtime value
+    // so the UI shows the correct value in the current session (not just after reboot)
+    if (!persist) {
+        rules_engine_set_var((uint8_t)index, def_val);
+        rules_engine_save();
+    }
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", true);
+
+    char *json_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(response);
+    return ESP_OK;
+}
+
+static esp_err_t api_rules_reset_handler(httpd_req_t *req)
+{
+    esp_err_t ret = rules_engine_reset();
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", ret == ESP_OK);
+    if (ret != ESP_OK) {
+        cJSON_AddStringToObject(response, "error", esp_err_to_name(ret));
+    }
+
+    char *json_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(response);
+    return ESP_OK;
+}
+
+// ============================================================================
+// HTTP Handlers - Log API
+// ============================================================================
+
+static esp_err_t api_logs_live_get_handler(httpd_req_t *req)
+{
+    char *buf = malloc(LOG_RAM_BUF + 1);
+    if (!buf) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    log_manager_get_live(buf, LOG_RAM_BUF + 1);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr  = cJSON_CreateArray();
+
+    // Split into lines, add as JSON array
+    char *line = buf;
+    char *nl;
+    bool truncated = false;
+    int count = 0;
+    while (*line) {
+        nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+        if (*line) {
+            cJSON_AddItemToArray(arr, cJSON_CreateString(line));
+            count++;
+            if (count >= 500) { truncated = true; break; }
+        }
+        if (!nl) break;
+        line = nl + 1;
+    }
+
+    cJSON_AddItemToObject(root, "lines", arr);
+    cJSON_AddBoolToObject(root, "truncated", truncated);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(root);
+    free(buf);
+    return ESP_OK;
+}
+
+static esp_err_t api_logs_history_get_handler(httpd_req_t *req)
+{
+    // Check for ?file=session_N.log query param
+    char file_param[32] = {0};
+    if (httpd_req_get_url_query_len(req) > 0) {
+        char query[64];
+        httpd_req_get_url_query_str(req, query, sizeof(query));
+        httpd_query_key_value(query, "file", file_param, sizeof(file_param));
+    }
+
+    if (file_param[0] != '\0') {
+        // Send specific session file as chunked plain/text
+        return log_manager_get_session(file_param, req);
+    }
+
+    // Return session list as JSON
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr  = cJSON_CreateArray();
+    log_manager_list_sessions(arr);
+    cJSON_AddItemToObject(root, "sessions", arr);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t api_logs_delete_handler(httpd_req_t *req)
+{
+    esp_err_t ret = log_manager_clear();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "success", ret == ESP_OK);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json_str);
+
+    free(json_str);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+// ============================================================================
 // HTTP Server Setup
 // ============================================================================
 
@@ -950,7 +1385,7 @@ static esp_err_t start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 24;  // Increased for PWA files
+    config.max_uri_handlers = 30;  // Increased for PWA files + rules API
 
     if (httpd_start(&s_server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -1094,12 +1529,82 @@ static esp_err_t start_webserver(void)
     };
     httpd_register_uri_handler(s_server, &api_global_config_post);
 
+    httpd_uri_t api_rules_get = {
+        .uri = "/api/rules",
+        .method = HTTP_GET,
+        .handler = api_rules_get_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_get);
+
+    httpd_uri_t api_rules_post = {
+        .uri = "/api/rules",
+        .method = HTTP_POST,
+        .handler = api_rules_post_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_post);
+
+    httpd_uri_t api_rules_timers = {
+        .uri = "/api/rules/timers",
+        .method = HTTP_GET,
+        .handler = api_rules_timers_get_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_timers);
+
+    httpd_uri_t api_rules_var = {
+        .uri = "/api/rules/var",
+        .method = HTTP_POST,
+        .handler = api_rules_var_post_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_var);
+
+    httpd_uri_t api_rules_varconfig = {
+        .uri = "/api/rules/varconfig",
+        .method = HTTP_POST,
+        .handler = api_rules_varconfig_post_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_varconfig);
+
+    httpd_uri_t api_rules_reset = {
+        .uri = "/api/rules/reset",
+        .method = HTTP_POST,
+        .handler = api_rules_reset_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_reset);
+
+    httpd_uri_t api_reboot = {
+        .uri = "/api/reboot",
+        .method = HTTP_POST,
+        .handler = api_reboot_handler
+    };
+    httpd_register_uri_handler(s_server, &api_reboot);
+
     httpd_uri_t api_factory_reset = {
         .uri = "/api/factory-reset",
         .method = HTTP_POST,
         .handler = api_factory_reset_handler
     };
     httpd_register_uri_handler(s_server, &api_factory_reset);
+
+    httpd_uri_t api_logs_live = {
+        .uri = "/api/logs/live",
+        .method = HTTP_GET,
+        .handler = api_logs_live_get_handler
+    };
+    httpd_register_uri_handler(s_server, &api_logs_live);
+
+    httpd_uri_t api_logs_history = {
+        .uri = "/api/logs/history",
+        .method = HTTP_GET,
+        .handler = api_logs_history_get_handler
+    };
+    httpd_register_uri_handler(s_server, &api_logs_history);
+
+    httpd_uri_t api_logs_delete = {
+        .uri = "/api/logs",
+        .method = HTTP_DELETE,
+        .handler = api_logs_delete_handler
+    };
+    httpd_register_uri_handler(s_server, &api_logs_delete);
 
     ESP_LOGI(TAG, "HTTP server started");
     return ESP_OK;
@@ -1217,6 +1722,7 @@ esp_err_t wifi_task_start(void)
 
 esp_err_t wifi_task_stop(void)
 {
+    log_manager_flush();
     stop_webserver();
 
     esp_err_t ret = esp_wifi_stop();
