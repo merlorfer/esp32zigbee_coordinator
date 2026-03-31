@@ -34,8 +34,10 @@ static void serial_cmd_task(void *arg)
                 if (line_buf[0] == '{') {
                     char *response = ble_handlers_process_command(line_buf, line_len);
                     if (response) {
-                        printf(">>>%s\n", response);
-                        fflush(stdout);
+                        int resp_len = strlen(response);
+                        usb_serial_jtag_write_bytes(">>>", 3, pdMS_TO_TICKS(100));
+                        usb_serial_jtag_write_bytes(response, resp_len, pdMS_TO_TICKS(500));
+                        usb_serial_jtag_write_bytes("\n", 1, pdMS_TO_TICKS(100));
                         free(response);
                     }
                 }
