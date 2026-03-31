@@ -35,9 +35,17 @@ static void serial_cmd_task(void *arg)
                     char *response = ble_handlers_process_command(line_buf, line_len);
                     if (response) {
                         int resp_len = strlen(response);
-                        usb_serial_jtag_write_bytes(">>>", 3, pdMS_TO_TICKS(100));
-                        usb_serial_jtag_write_bytes(response, resp_len, pdMS_TO_TICKS(500));
-                        usb_serial_jtag_write_bytes("\n", 1, pdMS_TO_TICKS(100));
+                        // Write in chunks to fit within TX ring buffer (4096 bytes)
+                        #define TX_CHUNK 2048
+                        usb_serial_jtag_write_bytes(">>>", 3, pdMS_TO_TICKS(200));
+                        int sent = 0;
+                        while (sent < resp_len) {
+                            int chunk = resp_len - sent;
+                            if (chunk > TX_CHUNK) chunk = TX_CHUNK;
+                            usb_serial_jtag_write_bytes(response + sent, chunk, pdMS_TO_TICKS(500));
+                            sent += chunk;
+                        }
+                        usb_serial_jtag_write_bytes("\n", 1, pdMS_TO_TICKS(200));
                         free(response);
                     }
                 }
@@ -55,7 +63,7 @@ esp_err_t serial_cmd_task_init(void)
 {
     usb_serial_jtag_driver_config_t cfg = {
         .rx_buffer_size = RX_BUF_SIZE,
-        .tx_buffer_size = 256,
+        .tx_buffer_size = 4096,
     };
     esp_err_t ret = usb_serial_jtag_driver_install(&cfg);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
