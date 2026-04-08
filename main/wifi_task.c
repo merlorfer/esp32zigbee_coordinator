@@ -457,8 +457,15 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t api_devices_virtual_post_handler(httpd_req_t *req);  // forward declaration
+
 static esp_err_t api_device_config_post_handler(httpd_req_t *req)
 {
+    // Route /api/devices/virtual to virtual device creation handler
+    if (strcmp(req->uri, "/api/devices/virtual") == 0) {
+        return api_devices_virtual_post_handler(req);
+    }
+
     // Extract IEEE address from URI
     char uri[64];
     strncpy(uri, req->uri, sizeof(uri) - 1);
@@ -1726,13 +1733,6 @@ static esp_err_t start_webserver(void)
         .handler = api_rules_exec_handler
     };
     httpd_register_uri_handler(s_server, &api_rules_exec);
-
-    httpd_uri_t api_devices_virtual = {
-        .uri = "/api/devices/virtual",
-        .method = HTTP_POST,
-        .handler = api_devices_virtual_post_handler
-    };
-    httpd_register_uri_handler(s_server, &api_devices_virtual);
 
     httpd_uri_t api_reboot = {
         .uri = "/api/reboot",
