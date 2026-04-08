@@ -158,11 +158,27 @@ esp_err_t nvs_load_device(uint8_t index, device_config_t *device)
     char key[16];
     snprintf(key, sizeof(key), "%s%d", NVS_KEY_DEVICE_PREFIX, index);
 
-    size_t size = sizeof(device_config_t);
-    ret = nvs_get_blob(handle, key, device, &size);
+    // Size-tolerant load: read stored size first, then load min(stored, current)
+    // This handles firmware upgrades where device_config_t grows with new fields.
+    size_t stored_size = 0;
+    ret = nvs_get_blob(handle, key, NULL, &stored_size);
+    if (ret != ESP_OK) {
+        nvs_close(handle);
+        return ret;
+    }
+
+    // Zero-fill so new fields get safe defaults
+    memset(device, 0, sizeof(device_config_t));
+    size_t load_size = stored_size < sizeof(device_config_t) ? stored_size : sizeof(device_config_t);
+    ret = nvs_get_blob(handle, key, device, &load_size);
     nvs_close(handle);
 
     if (ret == ESP_OK) {
+        if (stored_size < sizeof(device_config_t)) {
+            ESP_LOGW("NVS", "Device %d: stored size %d < current %d, new fields zero-initialized",
+                     index, (int)stored_size, (int)sizeof(device_config_t));
+        }
+
         // Initialize runtime-only fields after loading
         device->reading.raw_value = 0;
         device->reading.converted_value = 0.0f;
@@ -178,10 +194,6 @@ esp_err_t nvs_load_device(uint8_t index, device_config_t *device)
         device->sensor.upper_delay_pending = false;
         device->sensor.lower_delay_start = 0;
         device->sensor.upper_delay_start = 0;
-
-        // Handle migration for devices saved before sensor support was added
-        // If device_type was not set (old version), default to ON_OFF_LIGHT
-        // This is a simple migration - newer code will have device_type set properly
     }
 
     return ret;

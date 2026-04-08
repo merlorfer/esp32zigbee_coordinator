@@ -47,7 +47,7 @@ extern "C" {
  * Zigbee Configuration
  * ============================================================================ */
 
-#define MAX_DEVICES             10
+#define MAX_DEVICES             16
 #define ZIGBEE_PERMIT_JOIN_TIME 60
 #define ZIGBEE_CMD_TIMEOUT_MS   5000
 #define ZIGBEE_RETRY_COUNT      3
@@ -116,12 +116,17 @@ typedef struct {
 } time_pair_t;
 
 /**
- * @brief Automation mode enumeration
+ * @brief Automation mode bitmask flags
+ * Bits can be combined: 0x03 = interval mode (fixed-time window + delay repeat)
  */
-typedef enum {
-    MODE_FIXED_TIME = 0,
-    MODE_DELAY = 1
-} automation_mode_t;
+#define MODE_BIT_FIXED_TIME  0x01   // Fixed time pairs active (time_pairs used as windows)
+#define MODE_BIT_DELAY       0x02   // Delay/repeat cycle active
+
+// Legacy names for backward compatibility (single-mode values match the bitmask)
+#define MODE_FIXED_TIME      0x01
+#define MODE_DELAY           0x02
+
+typedef uint8_t automation_mode_t;
 
 /**
  * @brief Device type enumeration
@@ -131,7 +136,8 @@ typedef enum {
     DEVICE_TYPE_TEMPERATURE_SENSOR = 1,
     DEVICE_TYPE_HUMIDITY_SENSOR = 2,
     DEVICE_TYPE_WATER_LEVEL_SENSOR = 3,
-    DEVICE_TYPE_LEAK_SENSOR = 4
+    DEVICE_TYPE_LEAK_SENSOR = 4,
+    DEVICE_TYPE_VIRTUAL = 5             // Virtual actuator: executes rules engine commands
 } device_type_t;
 
 /**
@@ -214,6 +220,10 @@ typedef struct {
     uint16_t delay_duration_minutes;    // ON phase duration
     uint16_t delay_off2_minutes;        // OFF phase after ON (can be 0)
     uint32_t delay_cycle_start;         // Cycle start timestamp
+
+    // Virtual actuator commands (only for DEVICE_TYPE_VIRTUAL)
+    char virtual_on_cmd[48];            // Rules engine command on ON event (e.g. "set var4 1")
+    char virtual_off_cmd[48];           // Rules engine command on OFF event (e.g. "set var4 0")
 
     // Sensor configuration (only for sensor devices)
     sensor_config_t sensor;

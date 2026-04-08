@@ -27,9 +27,10 @@ typedef struct {
     uint64_t ieee_addr;
     uint8_t last_phase;      // Track last phase (0=OFF1, 1=ON, 2=OFF2, 255=uninitialized)
     bool last_state;         // Track last sent state
+    bool in_window;          // Interval mode: was in time window on last check
 } device_phase_tracking_t;
 
-#define MAX_TRACKED_DEVICES 10
+#define MAX_TRACKED_DEVICES 16
 static device_phase_tracking_t s_device_phases[MAX_TRACKED_DEVICES] = {0};
 static uint8_t s_tracked_device_count = 0;
 
@@ -123,6 +124,47 @@ static bool is_sensor_actuator(uint64_t ieee_addr)
 }
 
 // ============================================================================
+// Device Command Dispatch (handles Zigbee and Virtual actuators)
+// ============================================================================
+
+static void dispatch_device_cmd(device_config_t *dev, bool turn_on)
+{
+    if (dev->device_type == DEVICE_TYPE_VIRTUAL) {
+        const char *cmd = turn_on ? dev->virtual_on_cmd : dev->virtual_off_cmd;
+        if (cmd[0]) {
+            rules_engine_exec_command(cmd);
+        }
+    } else {
+        cmd_queue_msg_t msg = {
+            .ieee_addr = dev->ieee_addr,
+            .endpoint = dev->endpoint,
+            .cmd = turn_on ? CMD_ON : CMD_OFF
+        };
+        xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+    }
+}
+
+// ============================================================================
+// Time Window Helpers
+// ============================================================================
+
+static bool is_within_time_window(device_config_t *dev, struct tm *current_time)
+{
+    int current_minutes = current_time->tm_hour * 60 + current_time->tm_min;
+    for (int i = 0; i < dev->time_pair_count; i++) {
+        int on_min  = dev->time_pairs[i].on_time.hour  * 60 + dev->time_pairs[i].on_time.minute;
+        int off_min = dev->time_pairs[i].off_time.hour * 60 + dev->time_pairs[i].off_time.minute;
+        if (on_min <= off_min) {
+            if (current_minutes >= on_min && current_minutes < off_min) return true;
+        } else {
+            // Overnight window (e.g. 22:00 – 06:00)
+            if (current_minutes >= on_min || current_minutes < off_min) return true;
+        }
+    }
+    return false;
+}
+
+// ============================================================================
 // Fixed Time Mode Processing
 // ============================================================================
 
@@ -146,13 +188,7 @@ static void process_fixed_time_mode(device_config_t *dev, struct tm *current_tim
             char ieee_str[24];
             format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
             ESP_LOGI(TAG, "Fixed time ON triggered for device %s", ieee_str);
-
-            cmd_queue_msg_t msg = {
-                .ieee_addr = dev->ieee_addr,
-                .endpoint = dev->endpoint,
-                .cmd = CMD_ON
-            };
-            xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+            dispatch_device_cmd(dev, true);
         }
 
         // Check OFF time - always send command regardless of saved state
@@ -160,13 +196,7 @@ static void process_fixed_time_mode(device_config_t *dev, struct tm *current_tim
             char ieee_str[24];
             format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
             ESP_LOGI(TAG, "Fixed time OFF triggered for device %s", ieee_str);
-
-            cmd_queue_msg_t msg = {
-                .ieee_addr = dev->ieee_addr,
-                .endpoint = dev->endpoint,
-                .cmd = CMD_OFF
-            };
-            xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+            dispatch_device_cmd(dev, false);
         }
     }
 }
@@ -254,14 +284,84 @@ static void process_delay_mode(device_config_t *dev)
                  (unsigned long)cycle_length,
                  (unsigned long)minutes_until_change);
 
-        cmd_queue_msg_t msg = {
-            .ieee_addr = dev->ieee_addr,
-            .endpoint = dev->endpoint,
-            .cmd = expected_state ? CMD_ON : CMD_OFF
-        };
-        xQueueSend(g_cmd_queue, &msg, pdMS_TO_TICKS(100));
+        dispatch_device_cmd(dev, expected_state);
 
         // Track what we sent for THIS device (both state and phase)
+        tracking->last_state = expected_state;
+        tracking->last_phase = current_phase;
+    }
+}
+
+// ============================================================================
+// Interval Mode Processing (time window + repeating delay cycle)
+// ============================================================================
+
+static void process_interval_mode(device_config_t *dev, struct tm *current_time)
+{
+    if (!dev->enabled) return;
+    if (is_sensor_actuator(dev->ieee_addr)) return;
+    if (dev->time_pair_count == 0) return;
+
+    device_phase_tracking_t *tracking = get_device_phase_tracking(dev->ieee_addr);
+    if (!tracking) return;
+
+    bool currently_in_window = is_within_time_window(dev, current_time);
+
+    if (!currently_in_window) {
+        // Outside window: send OFF once on window exit (or first check)
+        if (tracking->in_window || tracking->last_phase == 255) {
+            if (tracking->last_state || tracking->last_phase == 255) {
+                char ieee_str[24];
+                format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
+                ESP_LOGI(TAG, "Interval mode: outside window, OFF for %s", ieee_str);
+                dispatch_device_cmd(dev, false);
+                tracking->last_state = false;
+            }
+        }
+        tracking->in_window = false;
+        tracking->last_phase = 255;  // Force phase re-evaluation on next window entry
+        return;
+    }
+
+    // Inside window
+    if (!tracking->in_window) {
+        // Just entered window — reset the delay cycle for this device
+        dev->delay_cycle_start = (uint32_t)time(NULL);
+        tracking->last_phase = 255;
+        char ieee_str[24];
+        format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
+        ESP_LOGI(TAG, "Interval mode: entered window for %s, cycle reset", ieee_str);
+    }
+    tracking->in_window = true;
+
+    if (dev->delay_cycle_start == 0) {
+        dev->delay_cycle_start = (uint32_t)time(NULL);
+    }
+
+    uint32_t cycle_length = dev->delay_off1_minutes + dev->delay_duration_minutes + dev->delay_off2_minutes;
+    if (cycle_length == 0) return;
+
+    time_t now = time(NULL);
+    uint32_t minutes_elapsed = (uint32_t)((now - dev->delay_cycle_start) / 60);
+    uint32_t position_in_cycle = minutes_elapsed % cycle_length;
+
+    uint32_t on_start = dev->delay_off1_minutes;
+    uint32_t on_end   = dev->delay_off1_minutes + dev->delay_duration_minutes;
+
+    uint8_t current_phase;
+    if (position_in_cycle < on_start)      current_phase = 0;  // OFF1
+    else if (position_in_cycle < on_end)   current_phase = 1;  // ON
+    else                                    current_phase = 2;  // OFF2
+
+    bool expected_state = (current_phase == 1);
+
+    if (current_phase != tracking->last_phase) {
+        char ieee_str[24];
+        format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
+        ESP_LOGI(TAG, "Interval mode %s for %s (pos: %lu/%lu min)",
+                 expected_state ? "ON" : "OFF", ieee_str,
+                 (unsigned long)position_in_cycle, (unsigned long)cycle_length);
+        dispatch_device_cmd(dev, expected_state);
         tracking->last_state = expected_state;
         tracking->last_phase = current_phase;
     }
@@ -602,6 +702,7 @@ static void scheduler_task(void *pvParameters)
 {
     struct tm current_time;
     uint8_t last_minute = 255;
+    uint8_t count = 0;
 
     ESP_LOGI(TAG, "Scheduler task started");
 
@@ -646,29 +747,34 @@ static void scheduler_task(void *pvParameters)
             ESP_LOGD(TAG, "Scheduler tick: %02d:%02d:%02d",
                      current_time.tm_hour, current_time.tm_min, current_time.tm_sec);
 
-            // Process each device
-            uint8_t count = device_manager_get_count();
+            // Process each device for fixed-time and interval modes (minute resolution)
+            count = device_manager_get_count();
             for (uint8_t i = 0; i < count; i++) {
                 device_config_t dev;
                 if (device_manager_get_by_index(i, &dev) != ESP_OK) {
                     continue;
                 }
 
-                if (dev.mode == MODE_FIXED_TIME) {
+                uint8_t mode = dev.mode;
+                if ((mode & MODE_BIT_FIXED_TIME) && !(mode & MODE_BIT_DELAY)) {
                     process_fixed_time_mode(&dev, &current_time);
                 }
+                // Interval mode is handled in the 10s loop below
             }
         }
 
-        // Process delay mode more frequently (every 10 seconds)
-        uint8_t count = device_manager_get_count();
+        // Process delay and interval modes every 10 seconds
+        count = device_manager_get_count();
         for (uint8_t i = 0; i < count; i++) {
             device_config_t dev;
             if (device_manager_get_by_index(i, &dev) != ESP_OK) {
                 continue;
             }
 
-            if (dev.mode == MODE_DELAY) {
+            uint8_t mode = dev.mode;
+            if ((mode & MODE_BIT_FIXED_TIME) && (mode & MODE_BIT_DELAY)) {
+                process_interval_mode(&dev, &current_time);
+            } else if (mode & MODE_BIT_DELAY) {
                 process_delay_mode(&dev);
             }
         }

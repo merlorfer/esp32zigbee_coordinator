@@ -17,12 +17,12 @@ extern "C" {
  * Constants
  * ============================================================================ */
 
-#define MAX_RULES           10
+#define MAX_RULES           20
 #define MAX_RULE_ACTIONS    4
-#define MAX_CONDITIONS      3
+#define MAX_CONDITIONS      6
 #define MAX_RULE_TIMERS     8
 #define MAX_RULE_VARIABLES  8
-#define MAX_RULES_TEXT_SIZE 2048
+#define MAX_RULES_TEXT_SIZE 4096
 
 /* ============================================================================
  * Enumerations
@@ -148,6 +148,15 @@ void rules_engine_set_var_config(uint8_t index, bool persist, float default_valu
 void rules_engine_get_var_config(uint8_t index, bool *persist, float *default_value);
 esp_err_t rules_engine_save_var_config(void);
 esp_err_t rules_engine_reset(void);
+
+/**
+ * @brief Execute a single rules engine command string directly
+ * Supports: "set varN value", "timerSet N seconds", "timerCancel N",
+ *           "on DeviceName", "off DeviceName", "toggle DeviceName"
+ * @param cmd_str Command string to execute
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG on parse failure
+ */
+esp_err_t rules_engine_exec_command(const char *cmd_str);
 
 #ifdef __cplusplus
 }

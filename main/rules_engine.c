@@ -1175,3 +1175,19 @@ esp_err_t rules_engine_reset(void)
     }
     return ret;
 }
+
+esp_err_t rules_engine_exec_command(const char *cmd_str)
+{
+    if (!cmd_str || !cmd_str[0]) return ESP_ERR_INVALID_ARG;
+
+    rule_action_t act;
+    memset(&act, 0, sizeof(act));
+
+    if (!parse_action(cmd_str, &act, 0)) {
+        ESP_LOGW(TAG, "exec_command: parse failed: %s", cmd_str);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    execute_action(&act);
+    return ESP_OK;
+}

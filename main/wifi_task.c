@@ -327,13 +327,23 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
         // Add device type
         cJSON_AddStringToObject(device, "device_type", sensor_type_to_string(dev.device_type));
 
-        // For ON_OFF_LIGHT devices, add automation mode and schedule
-        if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT) {
-            cJSON_AddStringToObject(device, "mode",
-                                   dev.mode == MODE_FIXED_TIME ? "fixed_time" : "delay");
+        // For ON_OFF_LIGHT and VIRTUAL devices, add automation mode and schedule
+        if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT || dev.device_type == DEVICE_TYPE_VIRTUAL) {
+            cJSON_AddBoolToObject(device, "mode_fixed_time", (dev.mode & MODE_BIT_FIXED_TIME) != 0);
+            cJSON_AddBoolToObject(device, "mode_delay",      (dev.mode & MODE_BIT_DELAY) != 0);
+            if ((dev.mode & MODE_BIT_FIXED_TIME) && (dev.mode & MODE_BIT_DELAY)) {
+                cJSON_AddStringToObject(device, "mode", "interval");
+            } else if (dev.mode & MODE_BIT_FIXED_TIME) {
+                cJSON_AddStringToObject(device, "mode", "fixed_time");
+            } else if (dev.mode & MODE_BIT_DELAY) {
+                cJSON_AddStringToObject(device, "mode", "delay");
+            } else {
+                cJSON_AddStringToObject(device, "mode", "none");
+            }
         }
 
-        if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT && dev.mode == MODE_FIXED_TIME) {
+        if ((dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT || dev.device_type == DEVICE_TYPE_VIRTUAL)
+            && (dev.mode & MODE_BIT_FIXED_TIME)) {
             cJSON *time_pairs = cJSON_CreateArray();
             for (int j = 0; j < dev.time_pair_count; j++) {
                 cJSON *pair = cJSON_CreateObject();
@@ -347,11 +357,19 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
                 cJSON_AddItemToArray(time_pairs, pair);
             }
             cJSON_AddItemToObject(device, "time_pairs", time_pairs);
-        } else if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT && dev.mode == MODE_DELAY) {
+        }
+        if ((dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT || dev.device_type == DEVICE_TYPE_VIRTUAL)
+            && (dev.mode & MODE_BIT_DELAY)) {
             // 3-phase delay: OFF1 → ON → OFF2
             cJSON_AddNumberToObject(device, "delay_off1_minutes", dev.delay_off1_minutes);
             cJSON_AddNumberToObject(device, "delay_duration_minutes", dev.delay_duration_minutes);
             cJSON_AddNumberToObject(device, "delay_off2_minutes", dev.delay_off2_minutes);
+        }
+
+        // For VIRTUAL devices, add command strings
+        if (dev.device_type == DEVICE_TYPE_VIRTUAL) {
+            cJSON_AddStringToObject(device, "virtual_on_cmd",  dev.virtual_on_cmd);
+            cJSON_AddStringToObject(device, "virtual_off_cmd", dev.virtual_off_cmd);
         }
 
         // For sensor devices, add sensor configuration and reading
@@ -505,13 +523,43 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
         dev.enabled = cJSON_IsTrue(item);
     }
 
-    item = cJSON_GetObjectItem(root, "mode");
-    if (cJSON_IsString(item)) {
-        if (strcmp(item->valuestring, "fixed_time") == 0) {
-            dev.mode = MODE_FIXED_TIME;
-        } else if (strcmp(item->valuestring, "delay") == 0) {
-            dev.mode = MODE_DELAY;
+    // Mode: accept bitmask booleans or legacy string
+    {
+        bool has_mode_bits = false;
+        cJSON *mft = cJSON_GetObjectItem(root, "mode_fixed_time");
+        cJSON *md  = cJSON_GetObjectItem(root, "mode_delay");
+        if (cJSON_IsBool(mft) || cJSON_IsBool(md)) {
+            has_mode_bits = true;
+            dev.mode = 0;
+            if (cJSON_IsTrue(mft)) dev.mode |= MODE_BIT_FIXED_TIME;
+            if (cJSON_IsTrue(md))  dev.mode |= MODE_BIT_DELAY;
         }
+        if (!has_mode_bits) {
+            item = cJSON_GetObjectItem(root, "mode");
+            if (cJSON_IsString(item)) {
+                if (strcmp(item->valuestring, "fixed_time") == 0) {
+                    dev.mode = MODE_FIXED_TIME;
+                } else if (strcmp(item->valuestring, "delay") == 0) {
+                    dev.mode = MODE_DELAY;
+                } else if (strcmp(item->valuestring, "interval") == 0) {
+                    dev.mode = MODE_BIT_FIXED_TIME | MODE_BIT_DELAY;
+                } else if (strcmp(item->valuestring, "none") == 0) {
+                    dev.mode = 0;
+                }
+            }
+        }
+    }
+
+    // Virtual actuator commands
+    item = cJSON_GetObjectItem(root, "virtual_on_cmd");
+    if (cJSON_IsString(item)) {
+        strncpy(dev.virtual_on_cmd, item->valuestring, sizeof(dev.virtual_on_cmd) - 1);
+        dev.virtual_on_cmd[sizeof(dev.virtual_on_cmd) - 1] = '\0';
+    }
+    item = cJSON_GetObjectItem(root, "virtual_off_cmd");
+    if (cJSON_IsString(item)) {
+        strncpy(dev.virtual_off_cmd, item->valuestring, sizeof(dev.virtual_off_cmd) - 1);
+        dev.virtual_off_cmd[sizeof(dev.virtual_off_cmd) - 1] = '\0';
     }
 
     // 3-phase delay: OFF1 → ON → OFF2
@@ -1271,6 +1319,123 @@ static esp_err_t api_rules_reset_handler(httpd_req_t *req)
 }
 
 // ============================================================================
+// HTTP Handlers - Rules Exec & Virtual Device
+// ============================================================================
+
+static esp_err_t api_rules_exec_handler(httpd_req_t *req)
+{
+    int content_len = req->content_len;
+    if (content_len <= 0 || content_len > 256) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad request");
+        return ESP_FAIL;
+    }
+
+    char *buf = malloc(content_len + 1);
+    if (!buf) { httpd_resp_send_500(req); return ESP_FAIL; }
+
+    int received = httpd_req_recv(req, buf, content_len);
+    if (received <= 0) { free(buf); httpd_resp_send_500(req); return ESP_FAIL; }
+    buf[received] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+
+    cJSON *response = cJSON_CreateObject();
+
+    if (!root) {
+        cJSON_AddStringToObject(response, "status", "error");
+        cJSON_AddStringToObject(response, "message", "Invalid JSON");
+    } else {
+        cJSON *cmd_item = cJSON_GetObjectItem(root, "cmd");
+        if (!cJSON_IsString(cmd_item)) {
+            cJSON_AddStringToObject(response, "status", "error");
+            cJSON_AddStringToObject(response, "message", "Missing cmd");
+        } else {
+            esp_err_t ret = rules_engine_exec_command(cmd_item->valuestring);
+            cJSON_AddStringToObject(response, "status", ret == ESP_OK ? "ok" : "error");
+        }
+        cJSON_Delete(root);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    char *json_str = cJSON_PrintUnformatted(response);
+    httpd_resp_sendstr(req, json_str);
+    free(json_str);
+    cJSON_Delete(response);
+    return ESP_OK;
+}
+
+static esp_err_t api_devices_virtual_post_handler(httpd_req_t *req)
+{
+    int content_len = req->content_len;
+    if (content_len <= 0 || content_len > 512) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad request");
+        return ESP_FAIL;
+    }
+
+    char *buf = malloc(content_len + 1);
+    if (!buf) { httpd_resp_send_500(req); return ESP_FAIL; }
+
+    int received = httpd_req_recv(req, buf, content_len);
+    if (received <= 0) { free(buf); httpd_resp_send_500(req); return ESP_FAIL; }
+    buf[received] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+
+    cJSON *response = cJSON_CreateObject();
+
+    if (!root) {
+        cJSON_AddStringToObject(response, "status", "error");
+        cJSON_AddStringToObject(response, "message", "Invalid JSON");
+    } else {
+        uint8_t count = device_manager_get_count();
+        uint64_t ieee_addr = 0xFFFF000000000001ULL + count;
+
+        esp_err_t ret = device_manager_add(ieee_addr, 1, "Virtual", "virtual");
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            cJSON_AddStringToObject(response, "status", "error");
+            cJSON_AddStringToObject(response, "message", "Failed to add device");
+        } else {
+            device_config_t dev;
+            if (device_manager_get(ieee_addr, &dev) == ESP_OK) {
+                dev.device_type = DEVICE_TYPE_VIRTUAL;
+                dev.mode = 0;
+
+                cJSON *item = cJSON_GetObjectItem(root, "name");
+                if (cJSON_IsString(item)) {
+                    strncpy(dev.custom_name, item->valuestring, MAX_DEVICE_NAME_LEN - 1);
+                    dev.custom_name[MAX_DEVICE_NAME_LEN - 1] = '\0';
+                }
+                item = cJSON_GetObjectItem(root, "on_cmd");
+                if (cJSON_IsString(item)) {
+                    strncpy(dev.virtual_on_cmd, item->valuestring, sizeof(dev.virtual_on_cmd) - 1);
+                    dev.virtual_on_cmd[sizeof(dev.virtual_on_cmd) - 1] = '\0';
+                }
+                item = cJSON_GetObjectItem(root, "off_cmd");
+                if (cJSON_IsString(item)) {
+                    strncpy(dev.virtual_off_cmd, item->valuestring, sizeof(dev.virtual_off_cmd) - 1);
+                    dev.virtual_off_cmd[sizeof(dev.virtual_off_cmd) - 1] = '\0';
+                }
+                device_manager_update_by_type(ieee_addr, DEVICE_TYPE_VIRTUAL, &dev);
+                cJSON_AddStringToObject(response, "status", "ok");
+            } else {
+                cJSON_AddStringToObject(response, "status", "error");
+                cJSON_AddStringToObject(response, "message", "Device not found after add");
+            }
+        }
+        cJSON_Delete(root);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    char *json_str = cJSON_PrintUnformatted(response);
+    httpd_resp_sendstr(req, json_str);
+    free(json_str);
+    cJSON_Delete(response);
+    return ESP_OK;
+}
+
+// ============================================================================
 // HTTP Handlers - Log API
 // ============================================================================
 
@@ -1554,6 +1719,20 @@ static esp_err_t start_webserver(void)
         .handler = api_rules_reset_handler
     };
     httpd_register_uri_handler(s_server, &api_rules_reset);
+
+    httpd_uri_t api_rules_exec = {
+        .uri = "/api/rules/exec",
+        .method = HTTP_POST,
+        .handler = api_rules_exec_handler
+    };
+    httpd_register_uri_handler(s_server, &api_rules_exec);
+
+    httpd_uri_t api_devices_virtual = {
+        .uri = "/api/devices/virtual",
+        .method = HTTP_POST,
+        .handler = api_devices_virtual_post_handler
+    };
+    httpd_register_uri_handler(s_server, &api_devices_virtual);
 
     httpd_uri_t api_reboot = {
         .uri = "/api/reboot",

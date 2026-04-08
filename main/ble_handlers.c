@@ -96,13 +96,25 @@ static char *handle_get_devices(cJSON *params)
         // Add device type
         cJSON_AddStringToObject(device, "device_type", sensor_type_to_string(dev.device_type));
 
-        // For ON_OFF_LIGHT devices, add automation mode and schedule
-        if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT) {
-            cJSON_AddStringToObject(device, "mode",
-                                   dev.mode == MODE_FIXED_TIME ? "fixed_time" : "delay");
+        // For ON_OFF_LIGHT and VIRTUAL devices, add automation mode and schedule
+        if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT || dev.device_type == DEVICE_TYPE_VIRTUAL) {
+            // Serialize mode as bitmask flags
+            cJSON_AddBoolToObject(device, "mode_fixed_time", (dev.mode & MODE_BIT_FIXED_TIME) != 0);
+            cJSON_AddBoolToObject(device, "mode_delay",      (dev.mode & MODE_BIT_DELAY) != 0);
+            // Legacy string for compatibility
+            if ((dev.mode & MODE_BIT_FIXED_TIME) && (dev.mode & MODE_BIT_DELAY)) {
+                cJSON_AddStringToObject(device, "mode", "interval");
+            } else if (dev.mode & MODE_BIT_FIXED_TIME) {
+                cJSON_AddStringToObject(device, "mode", "fixed_time");
+            } else if (dev.mode & MODE_BIT_DELAY) {
+                cJSON_AddStringToObject(device, "mode", "delay");
+            } else {
+                cJSON_AddStringToObject(device, "mode", "none");
+            }
         }
 
-        if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT && dev.mode == MODE_FIXED_TIME) {
+        if ((dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT || dev.device_type == DEVICE_TYPE_VIRTUAL)
+            && (dev.mode & MODE_BIT_FIXED_TIME)) {
             cJSON *time_pairs = cJSON_CreateArray();
             for (int j = 0; j < dev.time_pair_count; j++) {
                 cJSON *pair = cJSON_CreateObject();
@@ -116,11 +128,19 @@ static char *handle_get_devices(cJSON *params)
                 cJSON_AddItemToArray(time_pairs, pair);
             }
             cJSON_AddItemToObject(device, "time_pairs", time_pairs);
-        } else if (dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT && dev.mode == MODE_DELAY) {
+        }
+        if ((dev.device_type == DEVICE_TYPE_ON_OFF_LIGHT || dev.device_type == DEVICE_TYPE_VIRTUAL)
+            && (dev.mode & MODE_BIT_DELAY)) {
             // 3-phase delay: OFF1 → ON → OFF2
             cJSON_AddNumberToObject(device, "delay_off1_minutes", dev.delay_off1_minutes);
             cJSON_AddNumberToObject(device, "delay_duration_minutes", dev.delay_duration_minutes);
             cJSON_AddNumberToObject(device, "delay_off2_minutes", dev.delay_off2_minutes);
+        }
+
+        // For VIRTUAL devices, add command strings
+        if (dev.device_type == DEVICE_TYPE_VIRTUAL) {
+            cJSON_AddStringToObject(device, "virtual_on_cmd",  dev.virtual_on_cmd);
+            cJSON_AddStringToObject(device, "virtual_off_cmd", dev.virtual_off_cmd);
         }
 
         // For sensor devices, add sensor configuration and reading
@@ -326,12 +346,30 @@ static char *handle_set_device_config(cJSON *params)
         dev.enabled = cJSON_IsTrue(item);
     }
 
-    item = cJSON_GetObjectItem(params, "mode");
-    if (cJSON_IsString(item)) {
-        if (strcmp(item->valuestring, "fixed_time") == 0) {
-            dev.mode = MODE_FIXED_TIME;
-        } else if (strcmp(item->valuestring, "delay") == 0) {
-            dev.mode = MODE_DELAY;
+    // Mode can be set via bitmask booleans or legacy string
+    {
+        bool has_mode_bits = false;
+        cJSON *mft = cJSON_GetObjectItem(params, "mode_fixed_time");
+        cJSON *md  = cJSON_GetObjectItem(params, "mode_delay");
+        if (cJSON_IsBool(mft) || cJSON_IsBool(md)) {
+            has_mode_bits = true;
+            dev.mode = 0;
+            if (cJSON_IsTrue(mft)) dev.mode |= MODE_BIT_FIXED_TIME;
+            if (cJSON_IsTrue(md))  dev.mode |= MODE_BIT_DELAY;
+        }
+        if (!has_mode_bits) {
+            item = cJSON_GetObjectItem(params, "mode");
+            if (cJSON_IsString(item)) {
+                if (strcmp(item->valuestring, "fixed_time") == 0) {
+                    dev.mode = MODE_FIXED_TIME;
+                } else if (strcmp(item->valuestring, "delay") == 0) {
+                    dev.mode = MODE_DELAY;
+                } else if (strcmp(item->valuestring, "interval") == 0) {
+                    dev.mode = MODE_BIT_FIXED_TIME | MODE_BIT_DELAY;
+                } else if (strcmp(item->valuestring, "none") == 0) {
+                    dev.mode = 0;
+                }
+            }
         }
     }
 
@@ -377,6 +415,18 @@ static char *handle_set_device_config(cJSON *params)
                 }
             }
         }
+    }
+
+    // Virtual actuator commands
+    item = cJSON_GetObjectItem(params, "virtual_on_cmd");
+    if (cJSON_IsString(item)) {
+        strncpy(dev.virtual_on_cmd, item->valuestring, sizeof(dev.virtual_on_cmd) - 1);
+        dev.virtual_on_cmd[sizeof(dev.virtual_on_cmd) - 1] = '\0';
+    }
+    item = cJSON_GetObjectItem(params, "virtual_off_cmd");
+    if (cJSON_IsString(item)) {
+        strncpy(dev.virtual_off_cmd, item->valuestring, sizeof(dev.virtual_off_cmd) - 1);
+        dev.virtual_off_cmd[sizeof(dev.virtual_off_cmd) - 1] = '\0';
     }
 
     // Sensor configuration sub-object
@@ -452,6 +502,70 @@ static char *handle_set_device_config(cJSON *params)
     char *json_str = cJSON_PrintUnformatted(response);
     cJSON_Delete(response);
     return json_str;
+}
+
+static char *handle_add_virtual_device(cJSON *params)
+{
+    cJSON *root = cJSON_CreateObject();
+
+    if (params == NULL) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Missing params");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    // Generate a unique IEEE address in the virtual range 0xFFFF0000000000XX
+    uint8_t count = device_manager_get_count();
+    uint64_t ieee_addr = 0xFFFF000000000001ULL + count;
+
+    // Add device via device_manager_add, then update type and fields
+    esp_err_t ret = device_manager_add(ieee_addr, 1, "Virtual", "virtual");
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Failed to add device");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    // Now fetch the device and set virtual-specific fields
+    device_config_t dev;
+    if (device_manager_get(ieee_addr, &dev) != ESP_OK) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Device not found after add");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    dev.device_type = DEVICE_TYPE_VIRTUAL;
+    dev.mode = 0;
+
+    cJSON *item = cJSON_GetObjectItem(params, "name");
+    if (cJSON_IsString(item)) {
+        strncpy(dev.custom_name, item->valuestring, MAX_DEVICE_NAME_LEN - 1);
+        dev.custom_name[MAX_DEVICE_NAME_LEN - 1] = '\0';
+    }
+    item = cJSON_GetObjectItem(params, "on_cmd");
+    if (cJSON_IsString(item)) {
+        strncpy(dev.virtual_on_cmd, item->valuestring, sizeof(dev.virtual_on_cmd) - 1);
+        dev.virtual_on_cmd[sizeof(dev.virtual_on_cmd) - 1] = '\0';
+    }
+    item = cJSON_GetObjectItem(params, "off_cmd");
+    if (cJSON_IsString(item)) {
+        strncpy(dev.virtual_off_cmd, item->valuestring, sizeof(dev.virtual_off_cmd) - 1);
+        dev.virtual_off_cmd[sizeof(dev.virtual_off_cmd) - 1] = '\0';
+    }
+
+    device_manager_update_by_type(ieee_addr, DEVICE_TYPE_VIRTUAL, &dev);
+
+    cJSON_AddStringToObject(root, "status", "ok");
+    cJSON_AddStringToObject(root, "message", "Virtual device added");
+    char *s = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return s;
 }
 
 static char *handle_delete_device(cJSON *params)
@@ -1293,6 +1407,20 @@ char *ble_handlers_process_command(const char *json_str, size_t len)
         cJSON_AddStringToObject(root, "status", ret == ESP_OK ? "ok" : "error");
         response = cJSON_PrintUnformatted(root);
         cJSON_Delete(root);
+    } else if (strcmp(cmd, "exec_rules_cmd") == 0) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON *cmd_item = cJSON_GetObjectItem(params, "cmd");
+        if (cJSON_IsString(cmd_item)) {
+            esp_err_t ret = rules_engine_exec_command(cmd_item->valuestring);
+            cJSON_AddStringToObject(root, "status", ret == ESP_OK ? "ok" : "error");
+        } else {
+            cJSON_AddStringToObject(root, "status", "error");
+            cJSON_AddStringToObject(root, "message", "Missing cmd parameter");
+        }
+        response = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+    } else if (strcmp(cmd, "add_virtual_device") == 0) {
+        response = handle_add_virtual_device(params);
     } else if (strcmp(cmd, "get_logs_live") == 0) {
         response = handle_get_logs_live(params);
     } else {

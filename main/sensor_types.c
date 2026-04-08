@@ -102,6 +102,7 @@ const sensor_type_info_t* sensor_type_get_by_string(const char *type_str)
 
 const char* sensor_type_to_string(device_type_t type)
 {
+    if (type == DEVICE_TYPE_VIRTUAL) return "virtual";
     const sensor_type_info_t *info = sensor_type_get_info(type);
     if (info != NULL) {
         return info->type_string;
@@ -111,6 +112,7 @@ const char* sensor_type_to_string(device_type_t type)
 
 device_type_t sensor_type_from_string(const char *type_str)
 {
+    if (type_str && strcmp(type_str, "virtual") == 0) return DEVICE_TYPE_VIRTUAL;
     const sensor_type_info_t *info = sensor_type_get_by_string(type_str);
     if (info != NULL) {
         return info->device_type;
