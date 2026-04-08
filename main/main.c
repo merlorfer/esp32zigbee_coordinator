@@ -25,6 +25,7 @@
 #include "local_xkc_sensor.h"
 #include "log_manager.h"
 #include "rules_engine.h"
+#include "serial_cmd_task.h"
 
 static const char *TAG = "MAIN";
 
@@ -324,6 +325,9 @@ void app_main(void)
 
     // Initialize local XKC sensor module (does not start reading yet)
     ESP_ERROR_CHECK(local_xkc_sensor_init());
+
+    // Initialize serial command interface (USB Serial JTAG RX)
+    ESP_ERROR_CHECK(serial_cmd_task_init());
 
     // Start in setup mode with WiFi AP + BLE
     ESP_LOGI(TAG, "Starting in setup mode (WiFi AP + BLE)");

@@ -2,7 +2,7 @@
 # ESP32-C6 Zigbee Gateway main application
 
 idf_component_register(
-    SRCS "log_manager.c" "rules_engine.c" "local_xkc_sensor.c" "sensor_types.c" "ble_task.c" "ble_handlers.c" "ble_service.c" "main.c"
+    SRCS "serial_cmd_task.c" "log_manager.c" "rules_engine.c" "local_xkc_sensor.c" "sensor_types.c" "ble_task.c" "ble_handlers.c" "ble_service.c" "main.c"
          "wifi_task.c"
          "zigbee_task.c"
          "scheduler_task.c"
@@ -25,6 +25,7 @@ idf_component_register(
              wear_levelling
     PRIV_REQUIRES esp_driver_gpio
                   esp_driver_uart
+                  esp_driver_usb_serial_jtag
                   ieee802154
                   espressif__esp-zigbee-lib
 )
