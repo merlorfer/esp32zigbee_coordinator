@@ -559,7 +559,7 @@ static char *handle_add_virtual_device(cJSON *params)
         dev.virtual_off_cmd[sizeof(dev.virtual_off_cmd) - 1] = '\0';
     }
 
-    device_manager_update_by_type(ieee_addr, DEVICE_TYPE_VIRTUAL, &dev);
+    device_manager_update(ieee_addr, &dev);
 
     cJSON_AddStringToObject(root, "status", "ok");
     cJSON_AddStringToObject(root, "message", "Virtual device added");

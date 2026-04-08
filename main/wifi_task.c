@@ -1417,7 +1417,7 @@ static esp_err_t api_devices_virtual_post_handler(httpd_req_t *req)
                     strncpy(dev.virtual_off_cmd, item->valuestring, sizeof(dev.virtual_off_cmd) - 1);
                     dev.virtual_off_cmd[sizeof(dev.virtual_off_cmd) - 1] = '\0';
                 }
-                device_manager_update_by_type(ieee_addr, DEVICE_TYPE_VIRTUAL, &dev);
+                device_manager_update(ieee_addr, &dev);
                 cJSON_AddStringToObject(response, "status", "ok");
             } else {
                 cJSON_AddStringToObject(response, "status", "error");
