@@ -308,18 +308,18 @@ static void process_interval_mode(device_config_t *dev, struct tm *current_time)
     bool currently_in_window = is_within_time_window(dev, current_time);
 
     if (!currently_in_window) {
-        // Outside window: send OFF once on window exit (or first check)
+        // Outside window: send OFF only once (on window exit or very first check)
         if (tracking->in_window || tracking->last_phase == 255) {
-            if (tracking->last_state || tracking->last_phase == 255) {
-                char ieee_str[24];
-                format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
-                ESP_LOGI(TAG, "Interval mode: outside window, OFF for %s", ieee_str);
-                dispatch_device_cmd(dev, false);
-                tracking->last_state = false;
-            }
+            char ieee_str[24];
+            format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
+            ESP_LOGI(TAG, "Interval mode: outside window, OFF for %s", ieee_str);
+            dispatch_device_cmd(dev, false);
+            tracking->last_state = false;
         }
         tracking->in_window = false;
-        tracking->last_phase = 255;  // Force phase re-evaluation on next window entry
+        // Use 3 (not 255) so next tick does NOT re-trigger the "first check" condition.
+        // 255 is reserved for "uninitialized / must re-evaluate on window entry".
+        tracking->last_phase = 3;
         return;
     }
 
