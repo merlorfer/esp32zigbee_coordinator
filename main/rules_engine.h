@@ -18,7 +18,7 @@ extern "C" {
  * ============================================================================ */
 
 #define MAX_RULES           20
-#define MAX_RULE_ACTIONS    4
+#define MAX_RULE_ACTIONS    6
 #define MAX_CONDITIONS      6
 #define MAX_RULE_TIMERS     8
 #define MAX_RULE_VARIABLES  8

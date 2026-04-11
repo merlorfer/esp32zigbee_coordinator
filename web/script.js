@@ -387,6 +387,9 @@ function endpointToCommand(endpoint, body) {
     if (endpoint === '/api/rules/exec') {
         return { cmd: 'exec_rules_cmd', params: body || {} };
     }
+    if (endpoint === '/api/devices/virtual') {
+        return { cmd: 'add_virtual_device', params: body || {} };
+    }
     if (endpoint === '/api/logs/live') {
         return { cmd: 'get_logs_live', params: { lines: 50 } };
     }
@@ -531,7 +534,7 @@ async function addVirtualDevice() {
     const offCmd = document.getElementById('new-virtual-off').value.trim();
     if (!name) { showToast('Kerem adjon meg nevet!', true); return; }
     try {
-        const data = await httpRequest('/api/devices/virtual', 'POST', {
+        const data = await apiRequest('/api/devices/virtual', 'POST', {
             name, on_cmd: onCmd, off_cmd: offCmd
         });
         if (data.status === 'ok') {

@@ -327,6 +327,7 @@ static void process_interval_mode(device_config_t *dev, struct tm *current_time)
     if (!tracking->in_window) {
         // Just entered window — reset the delay cycle for this device
         dev->delay_cycle_start = (uint32_t)time(NULL);
+        device_manager_update(dev->ieee_addr, dev);  // persist cycle start
         tracking->last_phase = 255;
         char ieee_str[24];
         format_ieee_addr_str(ieee_str, sizeof(ieee_str), dev->ieee_addr);
@@ -336,6 +337,7 @@ static void process_interval_mode(device_config_t *dev, struct tm *current_time)
 
     if (dev->delay_cycle_start == 0) {
         dev->delay_cycle_start = (uint32_t)time(NULL);
+        device_manager_update(dev->ieee_addr, dev);  // persist cycle start
     }
 
     uint32_t cycle_length = dev->delay_off1_minutes + dev->delay_duration_minutes + dev->delay_off2_minutes;
