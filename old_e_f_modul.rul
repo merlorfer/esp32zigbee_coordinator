@@ -1,0 +1,92 @@
+//on boot do
+//  if [WLSensor] > 0
+//    on Tap
+//    timerSet 2 [var3]
+//    set var4 3
+//    on pumpLe
+//  else
+//    set var4 0
+//    off pumpLe
+//    off pumpTolt
+//  endif
+//endon
+
+on time 6:10 do
+  if [var4] = 0 and [var6] = 0
+    set var4 1
+  endif
+endon
+
+on time 2:00 do
+  if [var4] = 0 and [var6] = 0
+    set var4 1
+  endif
+endon
+
+on var4 do
+  if [var4] = 1
+    on Tap
+    timerSet 1 [var1]
+    on pumpTolt
+  endif
+endon
+
+on WLSensor do
+  if [WLSensor] >= 2 and [var4] = 1
+    off pumpTolt
+    timerSet 1 [var2]
+    set var4 2
+    off Tap
+  endif
+endon
+
+on WLSensor do
+  if [WLSensor] <= 0 and [var4] = 3
+    off pumpLe
+    timerSet 2 [var5]
+    set var4 0
+    off Tap
+  endif
+endon
+
+on timer1 do
+  if [var4] = 2
+    on Tap
+    set var4 3
+    timerSet 2 [var3]
+    on pumpLe
+  endif
+endon
+
+on timer1 do
+  if [var4] = 1
+    off pumpTolt
+    set var6 1
+    off Tap
+  endif
+endon
+
+on timer2 do
+  if [var4] = 3
+    off pumpLe
+    set var6 1
+    off Tap
+  endif
+endon
+
+on timer2 do
+  if [var4] = 0 and [hour] <= 22 and [hour] >= 6
+    set var4 1
+  endif
+endon
+
+on var6 do
+  if [var6] = 1
+    timerCancel 1
+    timerCancel 2
+    on HibaKi
+    set var4 0
+  else
+    off HibaKi
+  endif
+endon

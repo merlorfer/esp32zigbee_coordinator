@@ -1,0 +1,67 @@
+on var7 do
+  if [var7] = 1 and [var4] = 0 and [var6] = 0
+    set var4 1
+  endif
+endon
+
+on var4 do
+  if [var4] = 1
+    on Tap
+    timerSet 1 [var1]
+    on pumpTolt
+  endif
+endon
+
+on WLSensor do //feltöltés vége
+  if [WLSensor] >= 2 and [var4] = 1
+    off pumpTolt
+    timerSet 1 [var2]
+    set var4 2
+    off Tap
+  endif
+endon
+
+on WLSensor do //leeresztés vége
+  if [WLSensor] <= 0 and [var4] = 3
+    off pumpLe
+    set var4 0
+    off Tap
+    timerCancel 2
+  endif
+endon
+
+on timer1 do //vízben tartási időzítő
+  if [var4] = 2
+    set var4 3
+    on Tap
+    timerSet 2 [var3]
+    on pumpLe
+  endif
+endon
+
+on timer1 do //feltöltési hiba
+  if [var4] = 1
+    off pumpTolt
+    on pumpLe
+    set var4 3
+    set var6 1
+    timerSet 2 [var3]
+  endif
+endon
+
+on timer2 do //leeresztési hiba
+  if [var4] = 3
+    off pumpLe
+    set var6 1
+    off Tap
+  endif
+endon
+
+on var6 do
+  if [var6] = 1
+    timerCancel 2
+    on HibaKi
+  else
+    off HibaKi
+  endif
+endon
