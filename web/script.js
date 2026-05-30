@@ -1108,6 +1108,10 @@ async function loadGlobalConfig() {
             document.getElementById('log-zigbee-only').checked = !!data.log_zigbee_only;
         }
 
+        if (data.serial_interface !== undefined) {
+            document.getElementById('serial-interface').value = data.serial_interface;
+        }
+
         if (data.local_xkc_enabled !== undefined) {
             const xkcEnabled = !!data.local_xkc_enabled;
             document.getElementById('xkc-enabled').checked = xkcEnabled;
@@ -1173,15 +1177,22 @@ async function saveGlobalConfig() {
         return;
     }
 
+    const serialIface = parseInt(document.getElementById('serial-interface').value);
+
     try {
         const data = await apiRequest('/api/config', 'POST', {
-            local_xkc_enabled:   xkcEnabled,
+            local_xkc_enabled:    xkcEnabled,
             local_xkc_gpio_lower: gpioLower,
             local_xkc_gpio_upper: gpioUpper,
             log_zigbee_only:      zigbeeOnly,
+            serial_interface:     serialIface,
         });
         if (data.success || data.status === 'ok') {
-            showToast('Beallitasok mentve');
+            if (data.reboot_required) {
+                showToast('Beallitasok mentve — az ujrainditashoz a serial interfesz valtozas lep eletbe!');
+            } else {
+                showToast('Beallitasok mentve');
+            }
             setTimeout(loadDevices, 1000);
         } else {
             showToast(data.message || 'Hiba tortent', true);
