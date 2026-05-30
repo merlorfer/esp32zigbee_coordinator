@@ -739,6 +739,7 @@ static char *handle_get_global_settings(cJSON *params)
 
     cJSON_AddBoolToObject(response, "log_zigbee_only", config.log_zigbee_only);
     cJSON_AddBoolToObject(response, "rules_enabled", config.rules_enabled);
+    cJSON_AddNumberToObject(response, "serial_interface", config.serial_interface);
 
     // Valid GPIO pin list
     uint8_t gpio_count;
@@ -803,6 +804,16 @@ static char *handle_set_global_settings(cJSON *params)
         config.rules_enabled = cJSON_IsTrue(item);
     }
 
+    bool serial_interface_changed = false;
+    item = cJSON_GetObjectItem(params, "serial_interface");
+    if (cJSON_IsNumber(item)) {
+        uint8_t new_iface = (uint8_t)item->valueint;
+        if (new_iface <= 1 && new_iface != config.serial_interface) {
+            config.serial_interface = new_iface;
+            serial_interface_changed = true;
+        }
+    }
+
     // Validate GPIO pins if enabling
     if (config.local_xkc_enabled) {
         if (!local_xkc_sensor_is_valid_gpio(config.local_xkc_gpio_lower) ||
@@ -843,7 +854,13 @@ static char *handle_set_global_settings(cJSON *params)
 
     cJSON *response = cJSON_CreateObject();
     cJSON_AddStringToObject(response, "status", "ok");
-    cJSON_AddStringToObject(response, "message", "Global settings updated");
+    if (serial_interface_changed) {
+        cJSON_AddStringToObject(response, "message",
+            "Global settings updated — reboot required for serial_interface change");
+        cJSON_AddBoolToObject(response, "reboot_required", true);
+    } else {
+        cJSON_AddStringToObject(response, "message", "Global settings updated");
+    }
 
     char *json_str = cJSON_PrintUnformatted(response);
     cJSON_Delete(response);

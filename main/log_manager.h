@@ -59,6 +59,14 @@ esp_err_t log_manager_clear(void);
  */
 void log_manager_set_filter(bool zigbee_only);
 
+/**
+ * @brief Redirect console log output to a hardware serial interface.
+ *        Must be called AFTER the target driver has been installed.
+ * @param iface  0 = USB Serial JTAG / default stdout (default)
+ *               1 = UART0 (GPIO21 TX / GPIO20 RX)
+ */
+void log_manager_set_serial_interface(uint8_t iface);
+
 #ifdef __cplusplus
 }
 #endif

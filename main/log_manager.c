@@ -19,6 +19,7 @@
 #include "esp_vfs_fat.h"
 #include "esp_partition.h"
 #include "wear_levelling.h"
+#include "driver/uart.h"
 
 static const char *TAG = "log_manager";
 
@@ -62,6 +63,10 @@ static volatile bool     s_flush_needed = false;
 // (no timer handle needed — flush runs in its own task)
 static SemaphoreHandle_t s_flush_sem   = NULL;  // serializes flush calls
 static char              s_flush_local[LOG_FLUSH_BUF];  // avoids stack alloc in timer cb
+
+// Serial interface selection: 0 = default stdout/USB-JTAG, 1 = UART0
+// Set to 1 only after uart_driver_install() has succeeded (called by serial_cmd_task).
+static volatile uint8_t  s_serial_iface = 0;
 
 // ============================================================================
 // Internal helpers
@@ -110,8 +115,12 @@ static int log_vprintf_hook(const char *fmt, va_list args)
     if (len < 0) len = 0;
     if (len >= (int)sizeof(line)) len = sizeof(line) - 1;
 
-    // 1. UART (original behavior)
-    fputs(line, stdout);
+    // 1. Console output — UART0 when interface switched, default stdout otherwise
+    if (s_serial_iface == 1) {
+        uart_write_bytes(UART_NUM_0, line, len);
+    } else {
+        fputs(line, stdout);
+    }
 
     // 2. RAM ring buffer
     write_to_ram_buf(line, len);
@@ -430,4 +439,12 @@ void log_manager_set_filter(bool zigbee_only)
         esp_log_level_set(FILTERED_TAGS[i], level);
     }
     ESP_LOGI(TAG, "Log filter: %s", zigbee_only ? "Zigbee-only" : "all");
+}
+
+void log_manager_set_serial_interface(uint8_t iface)
+{
+    s_serial_iface = iface;
+    // Log this message before the switch so it still goes to the old channel,
+    // confirming the transition point in both channels.
+    ESP_LOGI(TAG, "Serial interface: %s", iface == 1 ? "UART0" : "USB-JTAG/stdout");
 }

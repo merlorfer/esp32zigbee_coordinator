@@ -73,18 +73,19 @@ esp_err_t nvs_load_global_config(global_config_t *config)
         return ret;
     }
 
+    // Zero the whole struct first so any fields not present in an older stored
+    // blob (struct grew in a newer firmware) keep their safe default value (0).
+    memset(config, 0, sizeof(global_config_t));
+
     size_t size = sizeof(global_config_t);
     ret = nvs_get_blob(handle, NVS_KEY_GLOBAL, config, &size);
     nvs_close(handle);
 
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Global config loaded successfully");
+        ESP_LOGI(TAG, "Global config loaded successfully (%u bytes)", (unsigned)size);
     } else if (ret == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(TAG, "No saved global config found, using defaults");
-        memset(config, 0, sizeof(global_config_t));
-        config->wifi_on_behavior = false;  // Default: power off devices on WiFi AP start
-        config->device_count = 0;
-        config->rtc_initialized = false;
+        // memset above already applied all-zero defaults; nothing extra needed.
     }
 
     return ret;
