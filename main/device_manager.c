@@ -78,12 +78,14 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
         return ESP_ERR_NO_MEM;
     }
 
-    // Check if device already exists (only check IEEE for backward compatibility)
-    if (device_manager_exists(ieee_addr)) {
-        char ieee_str[24];
-        format_ieee_addr_str(ieee_str, sizeof(ieee_str), ieee_addr);
-        ESP_LOGD(TAG, "Device %s already exists", ieee_str);
-        return ESP_ERR_INVALID_STATE;
+    // Check if (ieee_addr, endpoint) pair already exists
+    for (uint8_t i = 0; i < s_device_count; i++) {
+        if (s_devices[i].ieee_addr == ieee_addr && s_devices[i].endpoint == endpoint) {
+            char ieee_str[24];
+            format_ieee_addr_str(ieee_str, sizeof(ieee_str), ieee_addr);
+            ESP_LOGD(TAG, "Device %s ep=%d already exists", ieee_str, endpoint);
+            return ESP_ERR_INVALID_STATE;
+        }
     }
 
     if (g_device_mutex != NULL) {
@@ -116,7 +118,22 @@ esp_err_t device_manager_add(uint64_t ieee_addr, uint8_t endpoint,
         strncpy(dev->model, model, MAX_MODEL_LEN - 1);
     }
 
-    snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "Device%d", s_device_count + 1);
+    int ieee_first_idx = device_manager_find_index(ieee_addr);
+    if (ieee_first_idx >= 0) {
+        // Multi-endpoint device: name all entries for this IEEE with last-2-bytes + endpoint
+        uint8_t b1 = (ieee_addr >> 8) & 0xFF;
+        uint8_t b2 = ieee_addr & 0xFF;
+        for (uint8_t i = 0; i < s_device_count; i++) {
+            if (s_devices[i].ieee_addr == ieee_addr) {
+                snprintf(s_devices[i].custom_name, MAX_DEVICE_NAME_LEN,
+                         "%02X%02X_EP%d", b1, b2, s_devices[i].endpoint);
+                nvs_save_device(i, &s_devices[i]);
+            }
+        }
+        snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "%02X%02X_EP%d", b1, b2, endpoint);
+    } else {
+        snprintf(dev->custom_name, MAX_DEVICE_NAME_LEN, "Device%d", s_device_count + 1);
+    }
 
     s_device_count++;
     s_global_config.device_count = s_device_count;

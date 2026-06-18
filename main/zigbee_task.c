@@ -1586,23 +1586,17 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
         }
     }
 
-    if (device_added) {
-        // Mark discovery as complete if we added at least one device type
-        s_pending_discovery.pending = false;
-        s_pending_discovery.expected_responses = 0;
-    } else {
+    if (!device_added) {
         ESP_LOGI(TAG, "Endpoint %d has no supported clusters (ON_OFF/TEMP/HUMIDITY), skipping", endpoint);
+    }
 
-        // Decrement expected responses counter
-        if (s_pending_discovery.expected_responses > 0) {
-            s_pending_discovery.expected_responses--;
-        }
-
-        // If this was the last endpoint and no supported cluster found, clear pending
-        if (s_pending_discovery.expected_responses == 0) {
-            ESP_LOGW(TAG, "Device %s does not have any supported endpoints, not adding", ieee_str);
-            s_pending_discovery.pending = false;
-        }
+    // Always decrement counter; clear pending only when all endpoints have been processed
+    if (s_pending_discovery.expected_responses > 0) {
+        s_pending_discovery.expected_responses--;
+    }
+    if (s_pending_discovery.expected_responses == 0) {
+        s_pending_discovery.pending = false;
+        ESP_LOGI(TAG, "Discovery complete for device %s", ieee_str);
     }
 }
 
