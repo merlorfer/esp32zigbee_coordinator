@@ -1499,7 +1499,12 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
         if (s_pending_discovery.pending && s_pending_discovery.expected_responses > 0) {
             s_pending_discovery.expected_responses--;
             if (s_pending_discovery.expected_responses == 0) {
-                ESP_LOGW(TAG, "All endpoints checked, no HA ON_OFF device found");
+                if (s_pending_discovery.devices_added > 0) {
+                    ESP_LOGI(TAG, "Discovery complete: %d endpoint(s) added (non-HA endpoints skipped)",
+                             s_pending_discovery.devices_added);
+                } else {
+                    ESP_LOGW(TAG, "All endpoints checked, no HA ON_OFF device found");
+                }
                 s_pending_discovery.pending = false;
             }
         }
