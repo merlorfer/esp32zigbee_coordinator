@@ -494,7 +494,11 @@ static char *handle_set_device_config(cJSON *params)
         if (cJSON_IsNumber(item)) dev.sensor.upper_delay_seconds = (uint16_t)item->valueint;
     }
 
-    device_manager_update_by_type(ieee_addr, dev.device_type, &dev);
+    if (cJSON_IsNumber(ep_obj)) {
+        device_manager_update_by_endpoint(ieee_addr, dev.endpoint, &dev);
+    } else {
+        device_manager_update_by_type(ieee_addr, dev.device_type, &dev);
+    }
 
     // Send configure reporting to Zigbee device if sensor config was changed
     if (cJSON_IsObject(sensor_obj) && is_sensor_device(dev.device_type)) {
