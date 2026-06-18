@@ -568,9 +568,9 @@ async function deleteDevice(ieeeAddr) {
     }
 }
 
-async function sendDeviceCmd(ieeeAddr, deviceType, cmd) {
+async function sendDeviceCmd(ieeeAddr, endpoint, deviceType, cmd) {
     try {
-        await apiRequest('/api/devices/' + ieeeAddr + '/config', 'POST', { cmd, device_type: deviceType });
+        await apiRequest('/api/devices/' + ieeeAddr + '/config', 'POST', { cmd, device_type: deviceType, endpoint: endpoint });
         showToast(cmd.toUpperCase() + ' parancs elkuldve');
     } catch (error) {
         showToast('Kapcsolati hiba', true);
@@ -651,9 +651,9 @@ function renderOnOffCard(device) {
                 </div>
             </div>
             <div class="device-ctrl-buttons">
-                <button onclick="sendDeviceCmd('${device.ieee_addr}', '${device.device_type}', 'on')" class="btn btn-success btn-small" ${ctrlDisabled}>BE</button>
-                <button onclick="sendDeviceCmd('${device.ieee_addr}', '${device.device_type}', 'off')" class="btn btn-secondary btn-small" ${ctrlDisabled}>KI</button>
-                <button onclick="sendDeviceCmd('${device.ieee_addr}', '${device.device_type}', 'toggle')" class="btn btn-primary btn-small" ${ctrlDisabled}>Valtas</button>
+                <button onclick="sendDeviceCmd('${device.ieee_addr}', ${device.endpoint}, '${device.device_type}', 'on')" class="btn btn-success btn-small" ${ctrlDisabled}>BE</button>
+                <button onclick="sendDeviceCmd('${device.ieee_addr}', ${device.endpoint}, '${device.device_type}', 'off')" class="btn btn-secondary btn-small" ${ctrlDisabled}>KI</button>
+                <button onclick="sendDeviceCmd('${device.ieee_addr}', ${device.endpoint}, '${device.device_type}', 'toggle')" class="btn btn-primary btn-small" ${ctrlDisabled}>Valtas</button>
             </div>
             ${statusBadge}
             <details class="device-details">

@@ -300,7 +300,13 @@ static char *handle_set_device_config(cJSON *params)
     device_config_t dev;
     cJSON *dtype_obj = cJSON_GetObjectItem(params, "device_type");
     bool found = false;
-    if (cJSON_IsString(dtype_obj)) {
+    // Prefer explicit endpoint lookup (multi-endpoint devices like power strips)
+    cJSON *ep_obj = cJSON_GetObjectItem(params, "endpoint");
+    if (cJSON_IsNumber(ep_obj)) {
+        uint8_t ep = (uint8_t)ep_obj->valuedouble;
+        found = (device_manager_find_by_ieee_and_endpoint(ieee_addr, ep, &dev) == ESP_OK);
+    }
+    if (!found && cJSON_IsString(dtype_obj)) {
         device_type_t dtype = sensor_type_from_string(dtype_obj->valuestring);
         found = (device_manager_get_by_type(ieee_addr, dtype, &dev) == ESP_OK);
     }
