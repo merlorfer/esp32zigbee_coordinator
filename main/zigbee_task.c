@@ -92,6 +92,7 @@ typedef struct {
     uint64_t ieee_addr;
     bool pending;
     uint8_t expected_responses;  // Number of simple descriptor responses we're waiting for
+    uint8_t devices_added;       // Number of devices successfully added during this discovery
     bool match_desc_attempted;   // True if match_desc fallback was already tried (prevents loop)
     bool find_light_attempted;   // True if esp_zb_zdo_find_on_off_light was already tried
 } pending_discovery_t;
@@ -1457,9 +1458,9 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
         if (s_pending_discovery.pending && s_pending_discovery.expected_responses > 0) {
             s_pending_discovery.expected_responses--;
             if (s_pending_discovery.expected_responses == 0) {
-                // All simple descriptors failed/returned nothing — try match_desc fallback
-                if (!s_pending_discovery.match_desc_attempted) {
-                    ESP_LOGW(TAG, "All simple descriptors failed, trying match descriptor fallback");
+                // All simple descriptors processed; only fall back if none were added
+                if (!s_pending_discovery.match_desc_attempted && s_pending_discovery.devices_added == 0) {
+                    ESP_LOGW(TAG, "No supported endpoints found, trying match descriptor fallback");
                     s_pending_discovery.match_desc_attempted = true;
 
                     esp_zb_zdo_match_desc_req_param_t match_req = {
@@ -1470,6 +1471,11 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
                     // No alarm here — the existing param=0 alarm (from active_ep_cb)
                     // will fire shortly, see match_desc_attempted=true, and set
                     // a fresh param=1 alarm for 5s match_desc timeout.
+                } else if (s_pending_discovery.devices_added > 0) {
+                    ESP_LOGI(TAG, "Discovery complete: %d endpoint(s) added, %d had no supported clusters",
+                             s_pending_discovery.devices_added,
+                             0); // failures already logged per-endpoint
+                    s_pending_discovery.pending = false;
                 } else {
                     ESP_LOGW(TAG, "All simple descriptor requests completed, no supported device found");
                     s_pending_discovery.pending = false;
@@ -1578,9 +1584,11 @@ static void simple_desc_cb(esp_zb_zdp_status_t zdo_status, esp_zb_af_simple_desc
                 ESP_LOGI(TAG, "Device type: 0x%04x", simple_desc->app_device_id);
             }
             device_added = true;
+            s_pending_discovery.devices_added++;
         } else if (ret == ESP_ERR_INVALID_STATE) {
             ESP_LOGI(TAG, "ON/OFF device already exists");
             device_added = true;
+            s_pending_discovery.devices_added++;
         } else {
             ESP_LOGE(TAG, "Failed to add ON/OFF device: %s", esp_err_to_name(ret));
         }
