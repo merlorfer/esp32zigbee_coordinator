@@ -186,6 +186,16 @@ esp_err_t device_manager_find_by_ieee_and_endpoint(uint64_t ieee_addr, uint8_t e
                                                     device_config_t *device);
 
 /**
+ * @brief Update device configuration identified by (ieee_addr, endpoint) pair.
+ * @param ieee_addr 64-bit IEEE address
+ * @param endpoint Endpoint ID
+ * @param device New device configuration to write
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND if not found
+ */
+esp_err_t device_manager_update_by_endpoint(uint64_t ieee_addr, uint8_t endpoint,
+                                             const device_config_t *device);
+
+/**
  * @brief Get all sensor devices
  * @param sensors Array to store sensor devices (must be at least MAX_DEVICES size)
  * @param count Pointer to store number of sensors found

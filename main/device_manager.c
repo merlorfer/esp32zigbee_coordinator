@@ -625,6 +625,26 @@ esp_err_t device_manager_find_by_ieee_and_endpoint(uint64_t ieee_addr, uint8_t e
     return ESP_ERR_NOT_FOUND;
 }
 
+esp_err_t device_manager_update_by_endpoint(uint64_t ieee_addr, uint8_t endpoint,
+                                             const device_config_t *device)
+{
+    if (device == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    for (uint8_t i = 0; i < s_device_count; i++) {
+        if (s_devices[i].ieee_addr == ieee_addr && s_devices[i].endpoint == endpoint) {
+            if (g_device_mutex != NULL) xSemaphoreTake(g_device_mutex, portMAX_DELAY);
+            memcpy(&s_devices[i], device, sizeof(device_config_t));
+            nvs_save_device(i, &s_devices[i]);
+            if (g_device_mutex != NULL) xSemaphoreGive(g_device_mutex);
+            return ESP_OK;
+        }
+    }
+
+    return ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t device_manager_get_sensors(device_config_t *sensors, uint8_t *count)
 {
     if (sensors == NULL || count == NULL) {

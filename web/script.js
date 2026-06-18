@@ -954,7 +954,8 @@ async function saveDeviceConfig() {
 
     const config = {
         custom_name: document.getElementById('edit-name').value,
-        device_type: deviceType
+        device_type: deviceType,
+        endpoint: currentEditDevice ? currentEditDevice.endpoint : undefined
     };
 
     if (isSensor) {
