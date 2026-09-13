@@ -334,14 +334,17 @@ esp_err_t local_xkc_sensor_start(uint8_t gpio_lower, uint8_t gpio_upper,
     return ESP_OK;
 }
 
-esp_err_t local_xkc_sensor_stop(void)
+esp_err_t local_xkc_sensor_stop(bool remove_device)
 {
-    // Always remove the virtual device if it exists in device_manager,
-    // even when s_active is false (e.g. after reboot in setup mode the
-    // timer was never started but the device is still loaded from NVS).
-    int idx = device_manager_find_index_by_type(LOCAL_XKC_IEEE_ADDR, DEVICE_TYPE_WATER_LEVEL_SENSOR);
-    if (idx >= 0) {
-        device_manager_remove(LOCAL_XKC_IEEE_ADDR);
+    // Only remove the virtual device (losing its custom name, thresholds,
+    // links, etc.) when this is a genuine disable/delete -- not when we're
+    // just about to restart with a different GPIO/sense mode, in which case
+    // local_xkc_sensor_start() will find the existing entry and reuse it.
+    if (remove_device) {
+        int idx = device_manager_find_index_by_type(LOCAL_XKC_IEEE_ADDR, DEVICE_TYPE_WATER_LEVEL_SENSOR);
+        if (idx >= 0) {
+            device_manager_remove(LOCAL_XKC_IEEE_ADDR);
+        }
     }
 
     if (!s_active) {

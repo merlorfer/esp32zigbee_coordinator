@@ -604,7 +604,7 @@ static char *handle_delete_device(cJSON *params)
     // Handle local XKC virtual device deletion
     if (ieee_addr == LOCAL_XKC_IEEE_ADDR) {
         if (local_xkc_sensor_is_active()) {
-            local_xkc_sensor_stop();
+            local_xkc_sensor_stop(true);
         }
         // Disable in global config
         global_config_t gconfig;
@@ -889,9 +889,9 @@ static char *handle_set_global_settings(cJSON *params)
             uint8_t gu = config.local_xkc_gpio_upper > 0 ? config.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER;
             local_xkc_sensor_start(gl, gu, config.local_xkc_sense_mode, config.local_xkc_threshold_mv);
         } else if (!config.local_xkc_enabled && xkc_was_enabled) {
-            local_xkc_sensor_stop();
+            local_xkc_sensor_stop(true);
         } else if (config.local_xkc_enabled && (gpio_changed || sense_mode_changed)) {
-            local_xkc_sensor_stop();
+            local_xkc_sensor_stop(false);  // reconfiguring, not disabling: keep the device entry
             uint8_t gl = config.local_xkc_gpio_lower > 0 ? config.local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER;
             uint8_t gu = config.local_xkc_gpio_upper > 0 ? config.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER;
             local_xkc_sensor_start(gl, gu, config.local_xkc_sense_mode, config.local_xkc_threshold_mv);
@@ -1104,7 +1104,7 @@ static char *handle_factory_reset(cJSON *params)
 
     // Stop local XKC sensor if running
     if (local_xkc_sensor_is_active()) {
-        local_xkc_sensor_stop();
+        local_xkc_sensor_stop(true);
     }
 
     // Clear all devices
