@@ -51,9 +51,15 @@ esp_err_t local_xkc_sensor_start(uint8_t gpio_lower, uint8_t gpio_upper,
                                   uint8_t sense_mode, uint16_t threshold_mv);
 
 /**
- * @brief Stop reading and remove virtual device
+ * @brief Stop reading, releasing the GPIO/ADC resources for the active mode
+ * @param remove_device If true, also deletes the virtual device from the
+ *        device manager (its custom name, thresholds, links, etc. are
+ *        lost) -- use this for a genuine disable/delete. Pass false when
+ *        stopping only to immediately restart with a new GPIO/sense mode,
+ *        so the existing device entry (and whatever the user has
+ *        configured on it) survives the reconfiguration.
  */
-esp_err_t local_xkc_sensor_stop(void);
+esp_err_t local_xkc_sensor_stop(bool remove_device);
 
 /**
  * @brief Check if local XKC sensor is currently active
