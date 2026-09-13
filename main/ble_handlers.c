@@ -751,14 +751,37 @@ static char *handle_get_global_settings(cJSON *params)
     cJSON_AddBoolToObject(response, "rules_enabled", config.rules_enabled);
     cJSON_AddNumberToObject(response, "serial_interface", config.serial_interface);
 
-    // Valid GPIO pin list
-    uint8_t gpio_count;
-    const uint8_t *valid_gpios = local_xkc_sensor_get_valid_gpios(&gpio_count);
-    cJSON *gpio_array = cJSON_CreateArray();
-    for (uint8_t i = 0; i < gpio_count; i++) {
-        cJSON_AddItemToArray(gpio_array, cJSON_CreateNumber(valid_gpios[i]));
+    // Local XKC sensor: sense mode (digital GPIO vs analog ADC+threshold, an
+    // interim workaround until a level shifter is installed) and threshold
+    cJSON_AddNumberToObject(response, "local_xkc_sense_mode", config.local_xkc_sense_mode);
+    cJSON_AddNumberToObject(response, "local_xkc_threshold_mv",
+        config.local_xkc_threshold_mv > 0 ? config.local_xkc_threshold_mv : DEFAULT_XKC_THRESHOLD_MV);
+
+    // Valid GPIO pin lists for both sense modes, so the UI can switch the
+    // dropdown options immediately when the mode selector changes, without
+    // a round trip.
+    for (int mode = 0; mode <= 1; mode++) {
+        uint8_t gpio_count;
+        const uint8_t *valid_gpios = local_xkc_sensor_get_valid_gpios((uint8_t)mode, &gpio_count);
+        cJSON *gpio_array = cJSON_CreateArray();
+        for (uint8_t i = 0; i < gpio_count; i++) {
+            cJSON_AddItemToArray(gpio_array, cJSON_CreateNumber(valid_gpios[i]));
+        }
+        cJSON_AddItemToObject(response,
+            mode == XKC_SENSE_MODE_ANALOG ? "valid_xkc_gpios_analog" : "valid_xkc_gpios_digital",
+            gpio_array);
     }
-    cJSON_AddItemToObject(response, "valid_xkc_gpios", gpio_array);
+
+    // Backward-compatible key: valid list for whichever mode is active now
+    {
+        uint8_t gpio_count;
+        const uint8_t *valid_gpios = local_xkc_sensor_get_valid_gpios(config.local_xkc_sense_mode, &gpio_count);
+        cJSON *gpio_array = cJSON_CreateArray();
+        for (uint8_t i = 0; i < gpio_count; i++) {
+            cJSON_AddItemToArray(gpio_array, cJSON_CreateNumber(valid_gpios[i]));
+        }
+        cJSON_AddItemToObject(response, "valid_xkc_gpios", gpio_array);
+    }
 
     char *json_str = cJSON_PrintUnformatted(response);
     cJSON_Delete(response);
@@ -782,6 +805,7 @@ static char *handle_set_global_settings(cJSON *params)
     bool xkc_was_enabled = config.local_xkc_enabled;
     uint8_t old_gpio_lower = config.local_xkc_gpio_lower;
     uint8_t old_gpio_upper = config.local_xkc_gpio_upper;
+    uint8_t old_sense_mode = config.local_xkc_sense_mode;
 
     cJSON *item = cJSON_GetObjectItem(params, "wifi_on_behavior");
     if (cJSON_IsBool(item)) {
@@ -792,6 +816,17 @@ static char *handle_set_global_settings(cJSON *params)
     item = cJSON_GetObjectItem(params, "local_xkc_enabled");
     if (cJSON_IsBool(item)) {
         config.local_xkc_enabled = cJSON_IsTrue(item);
+    }
+
+    item = cJSON_GetObjectItem(params, "local_xkc_sense_mode");
+    if (cJSON_IsNumber(item)) {
+        config.local_xkc_sense_mode = (item->valueint == XKC_SENSE_MODE_ANALOG)
+            ? XKC_SENSE_MODE_ANALOG : XKC_SENSE_MODE_DIGITAL;
+    }
+
+    item = cJSON_GetObjectItem(params, "local_xkc_threshold_mv");
+    if (cJSON_IsNumber(item) && item->valueint >= 0 && item->valueint <= 3900) {
+        config.local_xkc_threshold_mv = (uint16_t)item->valueint;
     }
 
     item = cJSON_GetObjectItem(params, "local_xkc_gpio_lower");
@@ -824,10 +859,10 @@ static char *handle_set_global_settings(cJSON *params)
         }
     }
 
-    // Validate GPIO pins if enabling
+    // Validate GPIO pins (against the safe list for the now-current sense mode) if enabling
     if (config.local_xkc_enabled) {
-        if (!local_xkc_sensor_is_valid_gpio(config.local_xkc_gpio_lower) ||
-            !local_xkc_sensor_is_valid_gpio(config.local_xkc_gpio_upper) ||
+        if (!local_xkc_sensor_is_valid_gpio(config.local_xkc_gpio_lower, config.local_xkc_sense_mode) ||
+            !local_xkc_sensor_is_valid_gpio(config.local_xkc_gpio_upper, config.local_xkc_sense_mode) ||
             config.local_xkc_gpio_lower == config.local_xkc_gpio_upper) {
             cJSON *error = cJSON_CreateObject();
             cJSON_AddStringToObject(error, "status", "error");
@@ -847,18 +882,19 @@ static char *handle_set_global_settings(cJSON *params)
     {
         bool gpio_changed = (config.local_xkc_gpio_lower != old_gpio_lower ||
                             config.local_xkc_gpio_upper != old_gpio_upper);
+        bool sense_mode_changed = (config.local_xkc_sense_mode != old_sense_mode);
 
         if (config.local_xkc_enabled && !xkc_was_enabled) {
             uint8_t gl = config.local_xkc_gpio_lower > 0 ? config.local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER;
             uint8_t gu = config.local_xkc_gpio_upper > 0 ? config.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER;
-            local_xkc_sensor_start(gl, gu);
+            local_xkc_sensor_start(gl, gu, config.local_xkc_sense_mode, config.local_xkc_threshold_mv);
         } else if (!config.local_xkc_enabled && xkc_was_enabled) {
             local_xkc_sensor_stop();
-        } else if (config.local_xkc_enabled && gpio_changed) {
+        } else if (config.local_xkc_enabled && (gpio_changed || sense_mode_changed)) {
             local_xkc_sensor_stop();
             uint8_t gl = config.local_xkc_gpio_lower > 0 ? config.local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER;
             uint8_t gu = config.local_xkc_gpio_upper > 0 ? config.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER;
-            local_xkc_sensor_start(gl, gu);
+            local_xkc_sensor_start(gl, gu, config.local_xkc_sense_mode, config.local_xkc_threshold_mv);
         }
     }
 

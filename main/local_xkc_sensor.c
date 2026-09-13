@@ -3,9 +3,13 @@
  * @brief Local XKC water level sensor implementation
  *
  * Uses esp_timer (no new FreeRTOS task) to periodically read two XKC
- * non-contact water level sensors via GPIO. Data is fed through the
- * existing g_sensor_data_queue so the scheduler handles thresholds,
- * timeouts, and linked device automation automatically.
+ * non-contact water level sensors, either as plain GPIO levels (digital
+ * mode) or as ADC voltages compared against a software threshold (analog
+ * mode -- an interim workaround for sensors whose "high" output doesn't
+ * reach a reliable digital logic level at 3.3V, until a proper level
+ * shifter is installed). Data is fed through the existing
+ * g_sensor_data_queue so the scheduler handles thresholds, timeouts, and
+ * linked device automation automatically either way.
  */
 
 #include "local_xkc_sensor.h"
@@ -15,14 +19,23 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 #include <string.h>
 #include <time.h>
 
 static const char *TAG = "LOCAL_XKC";
 
-/* Valid GPIO pins for XKC sensors on ESP32-C6 */
-static const uint8_t s_valid_gpios[] = {
+/* Valid GPIO pins for XKC sensors on ESP32-C6, digital mode */
+static const uint8_t s_valid_gpios_digital[] = {
     3, 4, 5, 6, 7, 10, 11, 14, 18, 19, 20, 21, 22, 23
+};
+
+/* Analog mode: ESP32-C6 ADC1 only covers GPIO0-GPIO6, intersected with the
+ * digital-mode safe list above. */
+static const uint8_t s_valid_gpios_analog[] = {
+    3, 4, 5, 6
 };
 
 /* Module state */
@@ -30,41 +43,132 @@ static esp_timer_handle_t s_read_timer = NULL;
 static int16_t s_last_level = -1;           // Force first report (-1 = uninitialized)
 static uint8_t s_gpio_lower = 0;
 static uint8_t s_gpio_upper = 0;
+static uint8_t s_sense_mode = XKC_SENSE_MODE_DIGITAL;
+static uint16_t s_threshold_mv = DEFAULT_XKC_THRESHOLD_MV;
 static bool s_active = false;
 static uint32_t s_last_send_time = 0;       // Last time data was sent to queue
+
+/* Analog mode ADC state */
+static adc_oneshot_unit_handle_t s_adc_handle = NULL;
+static adc_cali_handle_t s_adc_cali_lower = NULL;
+static adc_cali_handle_t s_adc_cali_upper = NULL;
+static adc_channel_t s_adc_ch_lower = 0;
+static adc_channel_t s_adc_ch_upper = 0;
 
 /* External queues */
 extern QueueHandle_t g_sensor_data_queue;
 
 // ============================================================================
-// GPIO and Reading
+// GPIO / ADC init and reading
 // ============================================================================
 
-/**
- * @brief Initialize GPIO pins for XKC sensors
- * Pull-down enabled, input mode, no interrupt (polled via timer)
- */
-static void sensor_gpio_init(uint8_t gpio_lower, uint8_t gpio_upper)
+static void analog_init(uint8_t gpio_lower, uint8_t gpio_upper)
 {
-    gpio_config_t io_cfg = {
-        .pin_bit_mask = (1ULL << gpio_lower) | (1ULL << gpio_upper),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_ENABLE,
-        .intr_type = GPIO_INTR_DISABLE,
+    adc_oneshot_unit_init_cfg_t init_cfg = { .unit_id = ADC_UNIT_1 };
+    adc_oneshot_new_unit(&init_cfg, &s_adc_handle);
+
+    adc_unit_t unit;
+    adc_oneshot_io_to_channel(gpio_lower, &unit, &s_adc_ch_lower);
+    adc_oneshot_io_to_channel(gpio_upper, &unit, &s_adc_ch_upper);
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,      // widest range, needed since the
+                                       // unshifted sensor signal can exceed 2V
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-    gpio_config(&io_cfg);
-    ESP_LOGI(TAG, "GPIO initialized: lower=%d, upper=%d", gpio_lower, gpio_upper);
+    adc_oneshot_config_channel(s_adc_handle, s_adc_ch_lower, &chan_cfg);
+    adc_oneshot_config_channel(s_adc_handle, s_adc_ch_upper, &chan_cfg);
+
+    adc_cali_curve_fitting_config_t cali_cfg = {
+        .unit_id = ADC_UNIT_1,
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    cali_cfg.chan = s_adc_ch_lower;
+    if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_adc_cali_lower) != ESP_OK) {
+        s_adc_cali_lower = NULL;
+        ESP_LOGW(TAG, "ADC calibration unavailable for lower channel; using raw counts");
+    }
+    cali_cfg.chan = s_adc_ch_upper;
+    if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_adc_cali_upper) != ESP_OK) {
+        s_adc_cali_upper = NULL;
+        ESP_LOGW(TAG, "ADC calibration unavailable for upper channel; using raw counts");
+    }
+
+    ESP_LOGI(TAG, "ADC initialized: lower=GPIO%d upper=GPIO%d threshold=%dmV",
+             gpio_lower, gpio_upper, s_threshold_mv);
+}
+
+static void analog_deinit(void)
+{
+    if (s_adc_cali_lower) {
+        adc_cali_delete_scheme_curve_fitting(s_adc_cali_lower);
+        s_adc_cali_lower = NULL;
+    }
+    if (s_adc_cali_upper) {
+        adc_cali_delete_scheme_curve_fitting(s_adc_cali_upper);
+        s_adc_cali_upper = NULL;
+    }
+    if (s_adc_handle) {
+        adc_oneshot_del_unit(s_adc_handle);
+        s_adc_handle = NULL;
+    }
 }
 
 /**
- * @brief Read water level from two XKC sensors
+ * @brief Initialize the two sensor inputs for the active sense mode
+ */
+static void sensor_io_init(uint8_t gpio_lower, uint8_t gpio_upper, uint8_t sense_mode)
+{
+    if (sense_mode == XKC_SENSE_MODE_ANALOG) {
+        analog_init(gpio_lower, gpio_upper);
+    } else {
+        gpio_config_t io_cfg = {
+            .pin_bit_mask = (1ULL << gpio_lower) | (1ULL << gpio_upper),
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_ENABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&io_cfg);
+        ESP_LOGI(TAG, "GPIO initialized: lower=%d, upper=%d", gpio_lower, gpio_upper);
+    }
+}
+
+static int read_channel_mv(adc_channel_t chan, adc_cali_handle_t cali)
+{
+    int raw = 0;
+    adc_oneshot_read(s_adc_handle, chan, &raw);
+    if (cali != NULL) {
+        int mv = 0;
+        if (adc_cali_raw_to_voltage(cali, raw, &mv) == ESP_OK) {
+            return mv;
+        }
+    }
+    // Fallback without calibration: rough linear estimate for ADC_ATTEN_DB_12
+    // (~0-3900mV over the 12-bit range) -- good enough for the "far from
+    // threshold either way" comparisons this module needs.
+    return (raw * 3900) / 4095;
+}
+
+/**
+ * @brief Read water level from the two sensor inputs
  * @return 0 (empty), 1 (low), 2 (full)
  */
 static int16_t read_water_level(void)
 {
-    int lower = gpio_get_level(s_gpio_lower);
-    int upper = gpio_get_level(s_gpio_upper);
+    int lower, upper;
+
+    if (s_sense_mode == XKC_SENSE_MODE_ANALOG) {
+        int mv_lower = read_channel_mv(s_adc_ch_lower, s_adc_cali_lower);
+        int mv_upper = read_channel_mv(s_adc_ch_upper, s_adc_cali_upper);
+        lower = (mv_lower >= s_threshold_mv) ? 1 : 0;
+        upper = (mv_upper >= s_threshold_mv) ? 1 : 0;
+    } else {
+        lower = gpio_get_level(s_gpio_lower);
+        upper = gpio_get_level(s_gpio_upper);
+    }
+
     return (int16_t)(lower + upper);
 }
 
@@ -73,7 +177,7 @@ static int16_t read_water_level(void)
 // ============================================================================
 
 /**
- * @brief Periodic timer callback - reads GPIO and sends data to queue
+ * @brief Periodic timer callback - reads the sensor inputs and sends data to queue
  *
  * Sends data when:
  * 1. Value changed (and min_interval has elapsed since last send)
@@ -148,17 +252,18 @@ esp_err_t local_xkc_sensor_init(void)
     return ESP_OK;
 }
 
-esp_err_t local_xkc_sensor_start(uint8_t gpio_lower, uint8_t gpio_upper)
+esp_err_t local_xkc_sensor_start(uint8_t gpio_lower, uint8_t gpio_upper,
+                                  uint8_t sense_mode, uint16_t threshold_mv)
 {
     if (s_active) {
         ESP_LOGW(TAG, "Already active, stop first");
         return ESP_ERR_INVALID_STATE;
     }
 
-    // Validate GPIOs
-    if (!local_xkc_sensor_is_valid_gpio(gpio_lower) ||
-        !local_xkc_sensor_is_valid_gpio(gpio_upper)) {
-        ESP_LOGE(TAG, "Invalid GPIO pin(s): lower=%d, upper=%d", gpio_lower, gpio_upper);
+    // Validate GPIOs against the safe list for the requested sense mode
+    if (!local_xkc_sensor_is_valid_gpio(gpio_lower, sense_mode) ||
+        !local_xkc_sensor_is_valid_gpio(gpio_upper, sense_mode)) {
+        ESP_LOGE(TAG, "Invalid GPIO pin(s) for mode %d: lower=%d, upper=%d", sense_mode, gpio_lower, gpio_upper);
         return ESP_ERR_INVALID_ARG;
     }
     if (gpio_lower == gpio_upper) {
@@ -166,12 +271,14 @@ esp_err_t local_xkc_sensor_start(uint8_t gpio_lower, uint8_t gpio_upper)
         return ESP_ERR_INVALID_ARG;
     }
 
-    // Save GPIO pins
+    // Save state
     s_gpio_lower = gpio_lower;
     s_gpio_upper = gpio_upper;
+    s_sense_mode = sense_mode;
+    s_threshold_mv = (threshold_mv > 0) ? threshold_mv : DEFAULT_XKC_THRESHOLD_MV;
 
-    // Initialize GPIO
-    sensor_gpio_init(gpio_lower, gpio_upper);
+    // Initialize inputs for the active mode
+    sensor_io_init(gpio_lower, gpio_upper, sense_mode);
 
     // Add virtual device to device_manager if not already present
     int idx = device_manager_find_index_by_type(LOCAL_XKC_IEEE_ADDR, DEVICE_TYPE_WATER_LEVEL_SENSOR);
@@ -222,7 +329,8 @@ esp_err_t local_xkc_sensor_start(uint8_t gpio_lower, uint8_t gpio_upper)
     }
 
     s_active = true;
-    ESP_LOGI(TAG, "Local XKC sensor started (GPIO lower=%d, upper=%d)", gpio_lower, gpio_upper);
+    ESP_LOGI(TAG, "Local XKC sensor started (%s, GPIO lower=%d, upper=%d)",
+             sense_mode == XKC_SENSE_MODE_ANALOG ? "analog" : "digital", gpio_lower, gpio_upper);
     return ESP_OK;
 }
 
@@ -237,7 +345,7 @@ esp_err_t local_xkc_sensor_stop(void)
     }
 
     if (!s_active) {
-        return ESP_OK;  // No timer/GPIO resources to clean up
+        return ESP_OK;  // No timer/GPIO/ADC resources to clean up
     }
 
     // Stop and delete timer
@@ -247,9 +355,13 @@ esp_err_t local_xkc_sensor_stop(void)
         s_read_timer = NULL;
     }
 
-    // Reset GPIO pins to safe state
-    gpio_reset_pin(s_gpio_lower);
-    gpio_reset_pin(s_gpio_upper);
+    // Release whichever resources the active mode was using
+    if (s_sense_mode == XKC_SENSE_MODE_ANALOG) {
+        analog_deinit();
+    } else {
+        gpio_reset_pin(s_gpio_lower);
+        gpio_reset_pin(s_gpio_upper);
+    }
 
     s_active = false;
     s_last_level = -1;
@@ -264,20 +376,29 @@ bool local_xkc_sensor_is_active(void)
     return s_active;
 }
 
-bool local_xkc_sensor_is_valid_gpio(uint8_t gpio_num)
+bool local_xkc_sensor_is_valid_gpio(uint8_t gpio_num, uint8_t sense_mode)
 {
-    for (uint8_t i = 0; i < sizeof(s_valid_gpios); i++) {
-        if (s_valid_gpios[i] == gpio_num) {
+    uint8_t count;
+    const uint8_t *list = local_xkc_sensor_get_valid_gpios(sense_mode, &count);
+    for (uint8_t i = 0; i < count; i++) {
+        if (list[i] == gpio_num) {
             return true;
         }
     }
     return false;
 }
 
-const uint8_t* local_xkc_sensor_get_valid_gpios(uint8_t *count)
+const uint8_t* local_xkc_sensor_get_valid_gpios(uint8_t sense_mode, uint8_t *count)
 {
-    if (count != NULL) {
-        *count = sizeof(s_valid_gpios);
+    if (sense_mode == XKC_SENSE_MODE_ANALOG) {
+        if (count != NULL) {
+            *count = sizeof(s_valid_gpios_analog);
+        }
+        return s_valid_gpios_analog;
     }
-    return s_valid_gpios;
+
+    if (count != NULL) {
+        *count = sizeof(s_valid_gpios_digital);
+    }
+    return s_valid_gpios_digital;
 }
