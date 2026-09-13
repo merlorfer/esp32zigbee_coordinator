@@ -28,6 +28,26 @@ static const char *TAG = "BLE_HANDLERS";
 extern EventGroupHandle_t g_event_group;
 extern QueueHandle_t g_cmd_queue;
 
+/* ============================================================================
+ * Chunked upload state (serial-only in practice: upload_begin/upload_chunk/
+ * upload_commit/upload_abort let a large "rules" or "config" payload be sent
+ * as several small commands instead of one oversized line, since the serial
+ * line reader (serial_cmd_task.c) caps a single incoming line at LINE_BUF_SIZE.
+ * ============================================================================ */
+
+#define UPLOAD_MAX_SIZE (32 * 1024)
+
+typedef enum {
+    UPLOAD_TARGET_NONE = 0,
+    UPLOAD_TARGET_RULES,
+    UPLOAD_TARGET_CONFIG
+} upload_target_t;
+
+static char *s_upload_buf = NULL;
+static size_t s_upload_size = 0;
+static size_t s_upload_offset = 0;
+static upload_target_t s_upload_target = UPLOAD_TARGET_NONE;
+
 /* Helper function to format IEEE address as hex string */
 static void format_ieee_addr_hex(char *buf, size_t buf_size, uint64_t ieee_addr)
 {
@@ -68,22 +88,15 @@ static char *handle_get_status(cJSON *params)
     return json_str;
 }
 
-static char *handle_get_devices(cJSON *params)
+/* Builds the JSON representation of a single device, exactly as get_devices
+ * has always emitted it. Shared with handle_export_config so a config export
+ * is byte-for-byte the same shape as a get_devices response. */
+static cJSON *device_to_json(const device_config_t *dev_ptr)
 {
-    cJSON *root = cJSON_CreateObject();
-    cJSON *devices = cJSON_CreateArray();
+    const device_config_t dev = *dev_ptr;
+    cJSON *device = cJSON_CreateObject();
 
-    uint8_t count = device_manager_get_count();
-    ESP_LOGI(TAG, "get_devices: device count=%d", count);
-
-    for (uint8_t i = 0; i < count; i++) {
-        device_config_t dev;
-        if (device_manager_get_by_index(i, &dev) != ESP_OK) {
-            continue;
-        }
-
-        cJSON *device = cJSON_CreateObject();
-
+    {
         char addr_str[20];
         format_ieee_addr_hex(addr_str, sizeof(addr_str), dev.ieee_addr);
         cJSON_AddStringToObject(device, "ieee_addr", addr_str);
@@ -214,7 +227,25 @@ static char *handle_get_devices(cJSON *params)
             cJSON_AddNullToObject(device, "error");
         }
 
-        cJSON_AddItemToArray(devices, device);
+    }
+
+    return device;
+}
+
+static char *handle_get_devices(cJSON *params)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *devices = cJSON_CreateArray();
+
+    uint8_t count = device_manager_get_count();
+    ESP_LOGI(TAG, "get_devices: device count=%d", count);
+
+    for (uint8_t i = 0; i < count; i++) {
+        device_config_t dev;
+        if (device_manager_get_by_index(i, &dev) != ESP_OK) {
+            continue;
+        }
+        cJSON_AddItemToArray(devices, device_to_json(&dev));
     }
 
     cJSON_AddStringToObject(root, "status", "ok");
@@ -271,6 +302,168 @@ static char *handle_set_rtc(cJSON *params)
     char *json_str = cJSON_PrintUnformatted(response);
     cJSON_Delete(response);
     return json_str;
+}
+
+/* Applies the "custom_name / enabled / mode / delay / time_pairs /
+ * virtual_on_off_cmd / sensor" fields from a device JSON object (the same
+ * shape device_to_json emits) onto an in-memory device_config_t. Shared by
+ * handle_set_device_config (updating one existing device) and
+ * handle_import_config (recreating the whole device list from an exported
+ * config). Returns true if a "sensor" sub-object was present and applied. */
+static bool apply_device_fields_from_json(cJSON *params, device_config_t *dev)
+{
+    cJSON *item;
+
+    item = cJSON_GetObjectItem(params, "custom_name");
+    if (cJSON_IsString(item)) {
+        strncpy(dev->custom_name, item->valuestring, MAX_DEVICE_NAME_LEN - 1);
+        dev->custom_name[MAX_DEVICE_NAME_LEN - 1] = '\0';
+    }
+
+    item = cJSON_GetObjectItem(params, "enabled");
+    if (cJSON_IsBool(item)) {
+        dev->enabled = cJSON_IsTrue(item);
+    }
+
+    // Mode can be set via bitmask booleans or legacy string
+    {
+        bool has_mode_bits = false;
+        cJSON *mft = cJSON_GetObjectItem(params, "mode_fixed_time");
+        cJSON *md  = cJSON_GetObjectItem(params, "mode_delay");
+        if (cJSON_IsBool(mft) || cJSON_IsBool(md)) {
+            has_mode_bits = true;
+            dev->mode = 0;
+            if (cJSON_IsTrue(mft)) dev->mode |= MODE_BIT_FIXED_TIME;
+            if (cJSON_IsTrue(md))  dev->mode |= MODE_BIT_DELAY;
+        }
+        if (!has_mode_bits) {
+            item = cJSON_GetObjectItem(params, "mode");
+            if (cJSON_IsString(item)) {
+                if (strcmp(item->valuestring, "fixed_time") == 0) {
+                    dev->mode = MODE_FIXED_TIME;
+                } else if (strcmp(item->valuestring, "delay") == 0) {
+                    dev->mode = MODE_DELAY;
+                } else if (strcmp(item->valuestring, "interval") == 0) {
+                    dev->mode = MODE_BIT_FIXED_TIME | MODE_BIT_DELAY;
+                } else if (strcmp(item->valuestring, "none") == 0) {
+                    dev->mode = 0;
+                }
+            }
+        }
+    }
+
+    // 3-phase delay: OFF1 → ON → OFF2
+    item = cJSON_GetObjectItem(params, "delay_off1_minutes");
+    if (cJSON_IsNumber(item)) dev->delay_off1_minutes = item->valueint;
+
+    item = cJSON_GetObjectItem(params, "delay_duration_minutes");
+    if (cJSON_IsNumber(item)) dev->delay_duration_minutes = item->valueint;
+
+    item = cJSON_GetObjectItem(params, "delay_off2_minutes");
+    if (cJSON_IsNumber(item)) dev->delay_off2_minutes = item->valueint;
+
+    item = cJSON_GetObjectItem(params, "time_pairs");
+    if (cJSON_IsArray(item)) {
+        int count = cJSON_GetArraySize(item);
+        if (count > MAX_TIME_PAIRS) count = MAX_TIME_PAIRS;
+        dev->time_pair_count = count;
+
+        for (int i = 0; i < count; i++) {
+            cJSON *pair = cJSON_GetArrayItem(item, i);
+            cJSON *on = cJSON_GetObjectItem(pair, "on");
+            cJSON *off = cJSON_GetObjectItem(pair, "off");
+
+            if (cJSON_IsString(on)) {
+                int on_hour = 0, on_min = 0;
+                if (sscanf(on->valuestring, "%d:%d", &on_hour, &on_min) == 2) {
+                    dev->time_pairs[i].on_time.hour = (uint8_t)on_hour;
+                    dev->time_pairs[i].on_time.minute = (uint8_t)on_min;
+                }
+            }
+            if (cJSON_IsString(off)) {
+                int off_hour = 0, off_min = 0;
+                if (sscanf(off->valuestring, "%d:%d", &off_hour, &off_min) == 2) {
+                    dev->time_pairs[i].off_time.hour = (uint8_t)off_hour;
+                    dev->time_pairs[i].off_time.minute = (uint8_t)off_min;
+                }
+            }
+        }
+    }
+
+    // Virtual actuator commands
+    item = cJSON_GetObjectItem(params, "virtual_on_cmd");
+    if (cJSON_IsString(item)) {
+        strncpy(dev->virtual_on_cmd, item->valuestring, sizeof(dev->virtual_on_cmd) - 1);
+        dev->virtual_on_cmd[sizeof(dev->virtual_on_cmd) - 1] = '\0';
+    }
+    item = cJSON_GetObjectItem(params, "virtual_off_cmd");
+    if (cJSON_IsString(item)) {
+        strncpy(dev->virtual_off_cmd, item->valuestring, sizeof(dev->virtual_off_cmd) - 1);
+        dev->virtual_off_cmd[sizeof(dev->virtual_off_cmd) - 1] = '\0';
+    }
+
+    // Sensor configuration sub-object
+    cJSON *sensor_obj = cJSON_GetObjectItem(params, "sensor");
+    if (cJSON_IsObject(sensor_obj) && is_sensor_device(dev->device_type)) {
+
+        item = cJSON_GetObjectItem(sensor_obj, "lower_threshold");
+        if (cJSON_IsNumber(item)) dev->sensor.lower_threshold = (float)item->valuedouble;
+
+        item = cJSON_GetObjectItem(sensor_obj, "upper_threshold");
+        if (cJSON_IsNumber(item)) dev->sensor.upper_threshold = (float)item->valuedouble;
+
+        item = cJSON_GetObjectItem(sensor_obj, "lower_hysteresis");
+        if (cJSON_IsNumber(item)) dev->sensor.lower_hysteresis = (float)item->valuedouble;
+
+        item = cJSON_GetObjectItem(sensor_obj, "upper_hysteresis");
+        if (cJSON_IsNumber(item)) dev->sensor.upper_hysteresis = (float)item->valuedouble;
+
+        item = cJSON_GetObjectItem(sensor_obj, "lower_linked_device");
+        if (cJSON_IsString(item)) {
+            dev->sensor.lower_linked_device = strtoull(item->valuestring, NULL, 0);
+        } else if (cJSON_IsNull(item)) {
+            dev->sensor.lower_linked_device = 0;
+        }
+
+        item = cJSON_GetObjectItem(sensor_obj, "upper_linked_device");
+        if (cJSON_IsString(item)) {
+            dev->sensor.upper_linked_device = strtoull(item->valuestring, NULL, 0);
+        } else if (cJSON_IsNull(item)) {
+            dev->sensor.upper_linked_device = 0;
+        }
+
+        item = cJSON_GetObjectItem(sensor_obj, "error_linked_device");
+        if (cJSON_IsString(item)) {
+            dev->sensor.error_linked_device = strtoull(item->valuestring, NULL, 0);
+        } else if (cJSON_IsNull(item)) {
+            dev->sensor.error_linked_device = 0;
+        }
+
+        item = cJSON_GetObjectItem(sensor_obj, "error_action_on");
+        if (cJSON_IsBool(item)) dev->sensor.error_action_on = cJSON_IsTrue(item);
+
+        item = cJSON_GetObjectItem(sensor_obj, "timeout_seconds");
+        if (cJSON_IsNumber(item)) dev->sensor.timeout_seconds = (uint16_t)item->valueint;
+
+        item = cJSON_GetObjectItem(sensor_obj, "report_min_interval");
+        if (cJSON_IsNumber(item)) dev->sensor.report_min_interval = (uint16_t)item->valueint;
+
+        item = cJSON_GetObjectItem(sensor_obj, "report_max_interval");
+        if (cJSON_IsNumber(item)) dev->sensor.report_max_interval = (uint16_t)item->valueint;
+
+        item = cJSON_GetObjectItem(sensor_obj, "report_change");
+        if (cJSON_IsNumber(item)) dev->sensor.report_change = (int16_t)item->valueint;
+
+        item = cJSON_GetObjectItem(sensor_obj, "lower_delay_seconds");
+        if (cJSON_IsNumber(item)) dev->sensor.lower_delay_seconds = (uint16_t)item->valueint;
+
+        item = cJSON_GetObjectItem(sensor_obj, "upper_delay_seconds");
+        if (cJSON_IsNumber(item)) dev->sensor.upper_delay_seconds = (uint16_t)item->valueint;
+
+        return true;
+    }
+
+    return false;
 }
 
 static char *handle_set_device_config(cJSON *params)
@@ -341,158 +534,7 @@ static char *handle_set_device_config(cJSON *params)
     }
 
     // Update fields if present
-    item = cJSON_GetObjectItem(params, "custom_name");
-    if (cJSON_IsString(item)) {
-        strncpy(dev.custom_name, item->valuestring, MAX_DEVICE_NAME_LEN - 1);
-        dev.custom_name[MAX_DEVICE_NAME_LEN - 1] = '\0';
-    }
-
-    item = cJSON_GetObjectItem(params, "enabled");
-    if (cJSON_IsBool(item)) {
-        dev.enabled = cJSON_IsTrue(item);
-    }
-
-    // Mode can be set via bitmask booleans or legacy string
-    {
-        bool has_mode_bits = false;
-        cJSON *mft = cJSON_GetObjectItem(params, "mode_fixed_time");
-        cJSON *md  = cJSON_GetObjectItem(params, "mode_delay");
-        if (cJSON_IsBool(mft) || cJSON_IsBool(md)) {
-            has_mode_bits = true;
-            dev.mode = 0;
-            if (cJSON_IsTrue(mft)) dev.mode |= MODE_BIT_FIXED_TIME;
-            if (cJSON_IsTrue(md))  dev.mode |= MODE_BIT_DELAY;
-        }
-        if (!has_mode_bits) {
-            item = cJSON_GetObjectItem(params, "mode");
-            if (cJSON_IsString(item)) {
-                if (strcmp(item->valuestring, "fixed_time") == 0) {
-                    dev.mode = MODE_FIXED_TIME;
-                } else if (strcmp(item->valuestring, "delay") == 0) {
-                    dev.mode = MODE_DELAY;
-                } else if (strcmp(item->valuestring, "interval") == 0) {
-                    dev.mode = MODE_BIT_FIXED_TIME | MODE_BIT_DELAY;
-                } else if (strcmp(item->valuestring, "none") == 0) {
-                    dev.mode = 0;
-                }
-            }
-        }
-    }
-
-    // 3-phase delay: OFF1 → ON → OFF2
-    item = cJSON_GetObjectItem(params, "delay_off1_minutes");
-    if (cJSON_IsNumber(item)) {
-        dev.delay_off1_minutes = item->valueint;
-    }
-
-    item = cJSON_GetObjectItem(params, "delay_duration_minutes");
-    if (cJSON_IsNumber(item)) {
-        dev.delay_duration_minutes = item->valueint;
-    }
-
-    item = cJSON_GetObjectItem(params, "delay_off2_minutes");
-    if (cJSON_IsNumber(item)) {
-        dev.delay_off2_minutes = item->valueint;
-    }
-
-    item = cJSON_GetObjectItem(params, "time_pairs");
-    if (cJSON_IsArray(item)) {
-        int count = cJSON_GetArraySize(item);
-        if (count > MAX_TIME_PAIRS) count = MAX_TIME_PAIRS;
-        dev.time_pair_count = count;
-
-        for (int i = 0; i < count; i++) {
-            cJSON *pair = cJSON_GetArrayItem(item, i);
-            cJSON *on = cJSON_GetObjectItem(pair, "on");
-            cJSON *off = cJSON_GetObjectItem(pair, "off");
-
-            if (cJSON_IsString(on)) {
-                int on_hour = 0, on_min = 0;
-                if (sscanf(on->valuestring, "%d:%d", &on_hour, &on_min) == 2) {
-                    dev.time_pairs[i].on_time.hour = (uint8_t)on_hour;
-                    dev.time_pairs[i].on_time.minute = (uint8_t)on_min;
-                }
-            }
-            if (cJSON_IsString(off)) {
-                int off_hour = 0, off_min = 0;
-                if (sscanf(off->valuestring, "%d:%d", &off_hour, &off_min) == 2) {
-                    dev.time_pairs[i].off_time.hour = (uint8_t)off_hour;
-                    dev.time_pairs[i].off_time.minute = (uint8_t)off_min;
-                }
-            }
-        }
-    }
-
-    // Virtual actuator commands
-    item = cJSON_GetObjectItem(params, "virtual_on_cmd");
-    if (cJSON_IsString(item)) {
-        strncpy(dev.virtual_on_cmd, item->valuestring, sizeof(dev.virtual_on_cmd) - 1);
-        dev.virtual_on_cmd[sizeof(dev.virtual_on_cmd) - 1] = '\0';
-    }
-    item = cJSON_GetObjectItem(params, "virtual_off_cmd");
-    if (cJSON_IsString(item)) {
-        strncpy(dev.virtual_off_cmd, item->valuestring, sizeof(dev.virtual_off_cmd) - 1);
-        dev.virtual_off_cmd[sizeof(dev.virtual_off_cmd) - 1] = '\0';
-    }
-
-    // Sensor configuration sub-object
-    cJSON *sensor_obj = cJSON_GetObjectItem(params, "sensor");
-    if (cJSON_IsObject(sensor_obj) && is_sensor_device(dev.device_type)) {
-
-        item = cJSON_GetObjectItem(sensor_obj, "lower_threshold");
-        if (cJSON_IsNumber(item)) dev.sensor.lower_threshold = (float)item->valuedouble;
-
-        item = cJSON_GetObjectItem(sensor_obj, "upper_threshold");
-        if (cJSON_IsNumber(item)) dev.sensor.upper_threshold = (float)item->valuedouble;
-
-        item = cJSON_GetObjectItem(sensor_obj, "lower_hysteresis");
-        if (cJSON_IsNumber(item)) dev.sensor.lower_hysteresis = (float)item->valuedouble;
-
-        item = cJSON_GetObjectItem(sensor_obj, "upper_hysteresis");
-        if (cJSON_IsNumber(item)) dev.sensor.upper_hysteresis = (float)item->valuedouble;
-
-        item = cJSON_GetObjectItem(sensor_obj, "lower_linked_device");
-        if (cJSON_IsString(item)) {
-            dev.sensor.lower_linked_device = strtoull(item->valuestring, NULL, 0);
-        } else if (cJSON_IsNull(item)) {
-            dev.sensor.lower_linked_device = 0;
-        }
-
-        item = cJSON_GetObjectItem(sensor_obj, "upper_linked_device");
-        if (cJSON_IsString(item)) {
-            dev.sensor.upper_linked_device = strtoull(item->valuestring, NULL, 0);
-        } else if (cJSON_IsNull(item)) {
-            dev.sensor.upper_linked_device = 0;
-        }
-
-        item = cJSON_GetObjectItem(sensor_obj, "error_linked_device");
-        if (cJSON_IsString(item)) {
-            dev.sensor.error_linked_device = strtoull(item->valuestring, NULL, 0);
-        } else if (cJSON_IsNull(item)) {
-            dev.sensor.error_linked_device = 0;
-        }
-
-        item = cJSON_GetObjectItem(sensor_obj, "error_action_on");
-        if (cJSON_IsBool(item)) dev.sensor.error_action_on = cJSON_IsTrue(item);
-
-        item = cJSON_GetObjectItem(sensor_obj, "timeout_seconds");
-        if (cJSON_IsNumber(item)) dev.sensor.timeout_seconds = (uint16_t)item->valueint;
-
-        item = cJSON_GetObjectItem(sensor_obj, "report_min_interval");
-        if (cJSON_IsNumber(item)) dev.sensor.report_min_interval = (uint16_t)item->valueint;
-
-        item = cJSON_GetObjectItem(sensor_obj, "report_max_interval");
-        if (cJSON_IsNumber(item)) dev.sensor.report_max_interval = (uint16_t)item->valueint;
-
-        item = cJSON_GetObjectItem(sensor_obj, "report_change");
-        if (cJSON_IsNumber(item)) dev.sensor.report_change = (int16_t)item->valueint;
-
-        item = cJSON_GetObjectItem(sensor_obj, "lower_delay_seconds");
-        if (cJSON_IsNumber(item)) dev.sensor.lower_delay_seconds = (uint16_t)item->valueint;
-
-        item = cJSON_GetObjectItem(sensor_obj, "upper_delay_seconds");
-        if (cJSON_IsNumber(item)) dev.sensor.upper_delay_seconds = (uint16_t)item->valueint;
-    }
+    bool sensor_updated = apply_device_fields_from_json(params, &dev);
 
     if (cJSON_IsNumber(ep_obj)) {
         device_manager_update_by_endpoint(ieee_addr, dev.endpoint, &dev);
@@ -501,7 +543,7 @@ static char *handle_set_device_config(cJSON *params)
     }
 
     // Send configure reporting to Zigbee device if sensor config was changed
-    if (cJSON_IsObject(sensor_obj) && is_sensor_device(dev.device_type)) {
+    if (sensor_updated) {
         zigbee_reconfigure_sensor(ieee_addr, dev.device_type);
     }
 
@@ -731,25 +773,24 @@ static char *handle_permit_join(cJSON *params)
     return json_str;
 }
 
-static char *handle_get_global_settings(cJSON *params)
+/* Builds the global-settings JSON object. Shared by handle_get_global_settings
+ * and handle_export_config so the two stay in sync. */
+static cJSON *global_config_to_json(const global_config_t *config)
 {
-    global_config_t config;
-    device_manager_get_global_config(&config);
-
     cJSON *response = cJSON_CreateObject();
     cJSON_AddStringToObject(response, "status", "ok");
-    cJSON_AddBoolToObject(response, "wifi_on_behavior", config.wifi_on_behavior);
+    cJSON_AddBoolToObject(response, "wifi_on_behavior", config->wifi_on_behavior);
 
     // Local XKC sensor settings
-    cJSON_AddBoolToObject(response, "local_xkc_enabled", config.local_xkc_enabled);
+    cJSON_AddBoolToObject(response, "local_xkc_enabled", config->local_xkc_enabled);
     cJSON_AddNumberToObject(response, "local_xkc_gpio_lower",
-        config.local_xkc_gpio_lower > 0 ? config.local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER);
+        config->local_xkc_gpio_lower > 0 ? config->local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER);
     cJSON_AddNumberToObject(response, "local_xkc_gpio_upper",
-        config.local_xkc_gpio_upper > 0 ? config.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER);
+        config->local_xkc_gpio_upper > 0 ? config->local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER);
 
-    cJSON_AddBoolToObject(response, "log_zigbee_only", config.log_zigbee_only);
-    cJSON_AddBoolToObject(response, "rules_enabled", config.rules_enabled);
-    cJSON_AddNumberToObject(response, "serial_interface", config.serial_interface);
+    cJSON_AddBoolToObject(response, "log_zigbee_only", config->log_zigbee_only);
+    cJSON_AddBoolToObject(response, "rules_enabled", config->rules_enabled);
+    cJSON_AddNumberToObject(response, "serial_interface", config->serial_interface);
 
     // Valid GPIO pin list
     uint8_t gpio_count;
@@ -759,6 +800,16 @@ static char *handle_get_global_settings(cJSON *params)
         cJSON_AddItemToArray(gpio_array, cJSON_CreateNumber(valid_gpios[i]));
     }
     cJSON_AddItemToObject(response, "valid_xkc_gpios", gpio_array);
+
+    return response;
+}
+
+static char *handle_get_global_settings(cJSON *params)
+{
+    global_config_t config;
+    device_manager_get_global_config(&config);
+
+    cJSON *response = global_config_to_json(&config);
 
     char *json_str = cJSON_PrintUnformatted(response);
     cJSON_Delete(response);
@@ -1146,6 +1197,22 @@ static char *handle_get_rules(cJSON *params)
     return json_str;
 }
 
+/* Loads+saves rules text and fills in the status/rule_count (or error) fields
+ * on an already-created response object. Shared by handle_set_rules and the
+ * chunked upload_commit path (target="rules"). */
+static void apply_rules_text_result(const char *text, cJSON *root)
+{
+    esp_err_t ret = rules_engine_load_text(text);
+    if (ret == ESP_OK) {
+        rules_engine_save();
+        cJSON_AddStringToObject(root, "status", "ok");
+        cJSON_AddNumberToObject(root, "rule_count", rules_engine_get_rule_count());
+    } else {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", rules_engine_get_parse_error());
+    }
+}
+
 static char *handle_set_rules(cJSON *params)
 {
     cJSON *root = cJSON_CreateObject();
@@ -1167,15 +1234,7 @@ static char *handle_set_rules(cJSON *params)
         return json_str;
     }
 
-    esp_err_t ret = rules_engine_load_text(text_obj->valuestring);
-    if (ret == ESP_OK) {
-        rules_engine_save();
-        cJSON_AddStringToObject(root, "status", "ok");
-        cJSON_AddNumberToObject(root, "rule_count", rules_engine_get_rule_count());
-    } else {
-        cJSON_AddStringToObject(root, "status", "error");
-        cJSON_AddStringToObject(root, "message", rules_engine_get_parse_error());
-    }
+    apply_rules_text_result(text_obj->valuestring, root);
 
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -1272,6 +1331,389 @@ static char *handle_set_rules_varconfig(cJSON *params)
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     return json_str;
+}
+
+/* ============================================================================
+ * Config export/import (serial-oriented: full device list + global config +
+ * rule variables in one payload, so a factory reset can be undone quickly
+ * without re-entering every Zigbee device's automation/sensor settings by
+ * hand). Rules text has its own get_rules/set_rules pair already and is
+ * exported/imported as a separate file by the host-side tooling.
+ * ============================================================================ */
+
+static char *handle_export_config(cJSON *params)
+{
+    (void)params;
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", "ok");
+
+    global_config_t gconfig;
+    device_manager_get_global_config(&gconfig);
+    cJSON_AddItemToObject(root, "global_config", global_config_to_json(&gconfig));
+
+    cJSON *devices = cJSON_CreateArray();
+    uint8_t count = device_manager_get_count();
+    for (uint8_t i = 0; i < count; i++) {
+        device_config_t dev;
+        if (device_manager_get_by_index(i, &dev) != ESP_OK) {
+            continue;
+        }
+        cJSON_AddItemToArray(devices, device_to_json(&dev));
+    }
+    cJSON_AddItemToObject(root, "devices", devices);
+
+    cJSON *rule_vars = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RULE_VARIABLES; i++) {
+        bool persist;
+        float def_val;
+        rules_engine_get_var_config((uint8_t)i, &persist, &def_val);
+        cJSON *v = cJSON_CreateObject();
+        cJSON_AddNumberToObject(v, "index", i);
+        cJSON_AddNumberToObject(v, "value", rules_engine_get_var(i));
+        cJSON_AddBoolToObject(v, "persist", persist);
+        cJSON_AddNumberToObject(v, "default", def_val);
+        cJSON_AddItemToArray(rule_vars, v);
+    }
+    cJSON_AddItemToObject(root, "rule_vars", rule_vars);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json_str;
+}
+
+static char *handle_import_config(cJSON *params)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (params == NULL) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Missing params");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    // Global config: merge whichever fields are present onto the current config
+    cJSON *gc = cJSON_GetObjectItem(params, "global_config");
+    if (cJSON_IsObject(gc)) {
+        global_config_t config;
+        device_manager_get_global_config(&config);
+
+        cJSON *item = cJSON_GetObjectItem(gc, "wifi_on_behavior");
+        if (cJSON_IsBool(item)) config.wifi_on_behavior = cJSON_IsTrue(item);
+
+        item = cJSON_GetObjectItem(gc, "local_xkc_enabled");
+        if (cJSON_IsBool(item)) config.local_xkc_enabled = cJSON_IsTrue(item);
+
+        item = cJSON_GetObjectItem(gc, "local_xkc_gpio_lower");
+        if (cJSON_IsNumber(item)) config.local_xkc_gpio_lower = (uint8_t)item->valueint;
+
+        item = cJSON_GetObjectItem(gc, "local_xkc_gpio_upper");
+        if (cJSON_IsNumber(item)) config.local_xkc_gpio_upper = (uint8_t)item->valueint;
+
+        item = cJSON_GetObjectItem(gc, "log_zigbee_only");
+        if (cJSON_IsBool(item)) config.log_zigbee_only = cJSON_IsTrue(item);
+
+        item = cJSON_GetObjectItem(gc, "rules_enabled");
+        if (cJSON_IsBool(item)) config.rules_enabled = cJSON_IsTrue(item);
+
+        item = cJSON_GetObjectItem(gc, "serial_interface");
+        if (cJSON_IsNumber(item) && item->valueint <= 1) {
+            config.serial_interface = (uint8_t)item->valueint;
+        }
+
+        device_manager_set_global_config(&config);
+        log_manager_set_filter(config.log_zigbee_only);
+        rules_engine_set_enabled(config.rules_enabled);
+        // Note: the local XKC sensor is intentionally not (re)started here even
+        // if local_xkc_enabled came back true — a reboot after import picks it
+        // up cleanly via the normal app_main() startup path.
+    }
+
+    // Devices: recreate/update each entry. Sensor devices are keyed by
+    // (ieee_addr, device_type) since a multi-cluster sensor can have several
+    // device_type entries on the same endpoint; ON_OFF_LIGHT/VIRTUAL devices
+    // are keyed by (ieee_addr, endpoint) since a multi-outlet device has
+    // several endpoints of the same device_type.
+    int devices_imported = 0;
+    cJSON *devices = cJSON_GetObjectItem(params, "devices");
+    if (cJSON_IsArray(devices)) {
+        int count = cJSON_GetArraySize(devices);
+        for (int i = 0; i < count; i++) {
+            cJSON *djson = cJSON_GetArrayItem(devices, i);
+            cJSON *addr_item = cJSON_GetObjectItem(djson, "ieee_addr");
+            cJSON *ep_item = cJSON_GetObjectItem(djson, "endpoint");
+            cJSON *type_item = cJSON_GetObjectItem(djson, "device_type");
+            if (!cJSON_IsString(addr_item) || !cJSON_IsNumber(ep_item) || !cJSON_IsString(type_item)) {
+                continue;
+            }
+
+            uint64_t ieee_addr = strtoull(addr_item->valuestring, NULL, 0);
+            uint8_t endpoint = (uint8_t)ep_item->valueint;
+            device_type_t dtype = sensor_type_from_string(type_item->valuestring);
+
+            const char *manufacturer = NULL, *model = NULL;
+            cJSON *mf = cJSON_GetObjectItem(djson, "manufacturer");
+            cJSON *md = cJSON_GetObjectItem(djson, "model");
+            if (cJSON_IsString(mf)) manufacturer = mf->valuestring;
+            if (cJSON_IsString(md)) model = md->valuestring;
+
+            bool is_sensor = is_sensor_device(dtype);
+
+            if (!device_manager_exists(ieee_addr)) {
+                if (is_sensor) {
+                    device_manager_add_sensor(ieee_addr, endpoint, dtype, manufacturer, model);
+                } else {
+                    device_manager_add(ieee_addr, endpoint, manufacturer, model);
+                }
+            }
+
+            device_config_t dev;
+            bool found = is_sensor
+                ? (device_manager_get_by_type(ieee_addr, dtype, &dev) == ESP_OK)
+                : (device_manager_find_by_ieee_and_endpoint(ieee_addr, endpoint, &dev) == ESP_OK);
+            if (!found) {
+                continue;
+            }
+            dev.device_type = dtype;
+
+            apply_device_fields_from_json(djson, &dev);
+
+            if (is_sensor) {
+                device_manager_update_by_type(ieee_addr, dtype, &dev);
+            } else {
+                device_manager_update_by_endpoint(ieee_addr, endpoint, &dev);
+            }
+            devices_imported++;
+        }
+        device_manager_save_all();
+    }
+
+    // Rule variables (persist flag + default + current value)
+    cJSON *rule_vars = cJSON_GetObjectItem(params, "rule_vars");
+    if (cJSON_IsArray(rule_vars)) {
+        int count = cJSON_GetArraySize(rule_vars);
+        for (int i = 0; i < count; i++) {
+            cJSON *v = cJSON_GetArrayItem(rule_vars, i);
+            cJSON *idx_item = cJSON_GetObjectItem(v, "index");
+            if (!cJSON_IsNumber(idx_item)) continue;
+            int idx = idx_item->valueint;
+            if (idx < 0 || idx >= MAX_RULE_VARIABLES) continue;
+
+            cJSON *persist_item = cJSON_GetObjectItem(v, "persist");
+            cJSON *default_item = cJSON_GetObjectItem(v, "default");
+            cJSON *value_item = cJSON_GetObjectItem(v, "value");
+
+            bool persist = cJSON_IsBool(persist_item) ? cJSON_IsTrue(persist_item) : true;
+            float def_val = cJSON_IsNumber(default_item) ? (float)default_item->valuedouble : 0.0f;
+            float value = cJSON_IsNumber(value_item) ? (float)value_item->valuedouble : def_val;
+
+            rules_engine_set_var_config((uint8_t)idx, persist, def_val);
+            rules_engine_set_var((uint8_t)idx, value);
+        }
+        rules_engine_save_var_config();
+        rules_engine_save();
+    }
+
+    cJSON_AddStringToObject(root, "status", "ok");
+    cJSON_AddNumberToObject(root, "devices_imported", devices_imported);
+    char *s = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return s;
+}
+
+/* ============================================================================
+ * Chunked upload (serial-only in practice): lets a large "rules" or "config"
+ * payload arrive as several small commands so it never has to fit in one
+ * serial line. See UPLOAD_MAX_SIZE / upload_target_t near the top of this file.
+ * ============================================================================ */
+
+static char *handle_upload_begin(cJSON *params)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (params == NULL) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Missing params");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    cJSON *target_item = cJSON_GetObjectItem(params, "target");
+    cJSON *size_item = cJSON_GetObjectItem(params, "size");
+    if (!cJSON_IsString(target_item) || !cJSON_IsNumber(size_item)) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Missing target/size");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    upload_target_t target;
+    if (strcmp(target_item->valuestring, "rules") == 0) {
+        target = UPLOAD_TARGET_RULES;
+    } else if (strcmp(target_item->valuestring, "config") == 0) {
+        target = UPLOAD_TARGET_CONFIG;
+    } else {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Invalid target");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    int size = size_item->valueint;
+    if (size <= 0 || size > UPLOAD_MAX_SIZE) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Invalid size");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    // A fresh upload_begin always discards any previous in-progress upload.
+    if (s_upload_buf != NULL) {
+        free(s_upload_buf);
+        s_upload_buf = NULL;
+    }
+
+    s_upload_buf = malloc((size_t)size + 1);
+    if (s_upload_buf == NULL) {
+        s_upload_target = UPLOAD_TARGET_NONE;
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Out of memory");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    s_upload_size = (size_t)size;
+    s_upload_offset = 0;
+    s_upload_target = target;
+
+    cJSON_AddStringToObject(root, "status", "ok");
+    char *s = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return s;
+}
+
+static char *handle_upload_chunk(cJSON *params)
+{
+    cJSON *root = cJSON_CreateObject();
+
+    if (s_upload_buf == NULL || s_upload_target == UPLOAD_TARGET_NONE) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "No upload in progress");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    cJSON *data_item = (params != NULL) ? cJSON_GetObjectItem(params, "data") : NULL;
+    if (!cJSON_IsString(data_item)) {
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Missing data");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    size_t chunk_len = strlen(data_item->valuestring);
+    if (s_upload_offset + chunk_len > s_upload_size) {
+        free(s_upload_buf);
+        s_upload_buf = NULL;
+        s_upload_target = UPLOAD_TARGET_NONE;
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Upload overflow, aborted");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    memcpy(s_upload_buf + s_upload_offset, data_item->valuestring, chunk_len);
+    s_upload_offset += chunk_len;
+
+    cJSON_AddStringToObject(root, "status", "ok");
+    cJSON_AddNumberToObject(root, "received", (double)s_upload_offset);
+    cJSON_AddNumberToObject(root, "total", (double)s_upload_size);
+    char *s = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return s;
+}
+
+static char *handle_upload_abort(cJSON *params)
+{
+    (void)params;
+    if (s_upload_buf != NULL) {
+        free(s_upload_buf);
+        s_upload_buf = NULL;
+    }
+    s_upload_target = UPLOAD_TARGET_NONE;
+    s_upload_size = 0;
+    s_upload_offset = 0;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", "ok");
+    char *s = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return s;
+}
+
+static char *handle_upload_commit(cJSON *params)
+{
+    (void)params;
+
+    if (s_upload_buf == NULL || s_upload_target == UPLOAD_TARGET_NONE) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "No upload in progress");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    if (s_upload_offset != s_upload_size) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "status", "error");
+        cJSON_AddStringToObject(root, "message", "Incomplete upload");
+        char *s = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        return s;
+    }
+
+    s_upload_buf[s_upload_size] = '\0';
+    upload_target_t target = s_upload_target;
+    char *buf = s_upload_buf;
+
+    // Reset upload state before processing so a failure below can't leave a
+    // stale in-progress upload around.
+    s_upload_buf = NULL;
+    s_upload_target = UPLOAD_TARGET_NONE;
+    s_upload_size = 0;
+    s_upload_offset = 0;
+
+    if (target == UPLOAD_TARGET_RULES) {
+        cJSON *result = cJSON_CreateObject();
+        apply_rules_text_result(buf, result);
+        free(buf);
+        char *s = cJSON_PrintUnformatted(result);
+        cJSON_Delete(result);
+        return s;
+    }
+
+    // target == UPLOAD_TARGET_CONFIG
+    cJSON *parsed = cJSON_Parse(buf);
+    free(buf);
+    if (parsed == NULL) {
+        cJSON *err = cJSON_CreateObject();
+        cJSON_AddStringToObject(err, "status", "error");
+        cJSON_AddStringToObject(err, "message", "Invalid JSON in uploaded config");
+        char *s = cJSON_PrintUnformatted(err);
+        cJSON_Delete(err);
+        return s;
+    }
+    char *result = handle_import_config(parsed);
+    cJSON_Delete(parsed);
+    return result;
 }
 
 static char *handle_get_logs_live(cJSON *params)
@@ -1450,6 +1892,18 @@ char *ble_handlers_process_command(const char *json_str, size_t len)
         response = handle_add_virtual_device(params);
     } else if (strcmp(cmd, "get_logs_live") == 0) {
         response = handle_get_logs_live(params);
+    } else if (strcmp(cmd, "export_config") == 0) {
+        response = handle_export_config(params);
+    } else if (strcmp(cmd, "import_config") == 0) {
+        response = handle_import_config(params);
+    } else if (strcmp(cmd, "upload_begin") == 0) {
+        response = handle_upload_begin(params);
+    } else if (strcmp(cmd, "upload_chunk") == 0) {
+        response = handle_upload_chunk(params);
+    } else if (strcmp(cmd, "upload_commit") == 0) {
+        response = handle_upload_commit(params);
+    } else if (strcmp(cmd, "upload_abort") == 0) {
+        response = handle_upload_abort(params);
     } else {
         cJSON *error = cJSON_CreateObject();
         cJSON_AddStringToObject(error, "status", "error");
