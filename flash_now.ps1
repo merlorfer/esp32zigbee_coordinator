@@ -16,6 +16,7 @@ python "$env:IDF_PATH\components\esptool_py\esptool\esptool.py" `
     --flash_mode dio `
     --flash_freq 80m `
     --flash_size 4MB `
-    0x0    "D:\Programing\esp-idf\projects\AiAgent\CLCode01\build\bootloader\bootloader.bin" `
-    0x8000 "D:\Programing\esp-idf\projects\AiAgent\CLCode01\build\partition_table\partition-table.bin" `
-    0x10000 "D:\Programing\esp-idf\projects\AiAgent\CLCode01\build\esp32c6_zigbee_gateway.bin"
+    0x0       "D:\Programing\esp-idf\projects\AiAgent\CLCode01\build\bootloader\bootloader.bin" `
+    0x8000    "D:\Programing\esp-idf\projects\AiAgent\CLCode01\build\partition_table\partition-table.bin" `
+    0x10000   "D:\Programing\esp-idf\projects\AiAgent\CLCode01\build\esp32c6_zigbee_gateway.bin" `
+    0x1F5000  "D:\Programing\esp-idf\projects\AiAgent\CLCode01\build\storage.bin"
