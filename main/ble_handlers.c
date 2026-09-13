@@ -794,9 +794,9 @@ static cJSON *global_config_to_json(const global_config_t *config)
 
     // Local XKC sensor: sense mode (digital GPIO vs analog ADC+threshold, an
     // interim workaround until a level shifter is installed) and threshold
-    cJSON_AddNumberToObject(response, "local_xkc_sense_mode", config.local_xkc_sense_mode);
+    cJSON_AddNumberToObject(response, "local_xkc_sense_mode", config->local_xkc_sense_mode);
     cJSON_AddNumberToObject(response, "local_xkc_threshold_mv",
-        config.local_xkc_threshold_mv > 0 ? config.local_xkc_threshold_mv : DEFAULT_XKC_THRESHOLD_MV);
+        config->local_xkc_threshold_mv > 0 ? config->local_xkc_threshold_mv : DEFAULT_XKC_THRESHOLD_MV);
 
     // Valid GPIO pin lists for both sense modes, so the UI can switch the
     // dropdown options immediately when the mode selector changes, without
@@ -816,7 +816,7 @@ static cJSON *global_config_to_json(const global_config_t *config)
     // Backward-compatible key: valid list for whichever mode is active now
     {
         uint8_t gpio_count;
-        const uint8_t *valid_gpios = local_xkc_sensor_get_valid_gpios(config.local_xkc_sense_mode, &gpio_count);
+        const uint8_t *valid_gpios = local_xkc_sensor_get_valid_gpios(config->local_xkc_sense_mode, &gpio_count);
         cJSON *gpio_array = cJSON_CreateArray();
         for (uint8_t i = 0; i < gpio_count; i++) {
             cJSON_AddItemToArray(gpio_array, cJSON_CreateNumber(valid_gpios[i]));
@@ -1445,6 +1445,17 @@ static char *handle_import_config(cJSON *params)
 
         item = cJSON_GetObjectItem(gc, "local_xkc_gpio_upper");
         if (cJSON_IsNumber(item)) config.local_xkc_gpio_upper = (uint8_t)item->valueint;
+
+        item = cJSON_GetObjectItem(gc, "local_xkc_sense_mode");
+        if (cJSON_IsNumber(item)) {
+            config.local_xkc_sense_mode = (item->valueint == XKC_SENSE_MODE_ANALOG)
+                ? XKC_SENSE_MODE_ANALOG : XKC_SENSE_MODE_DIGITAL;
+        }
+
+        item = cJSON_GetObjectItem(gc, "local_xkc_threshold_mv");
+        if (cJSON_IsNumber(item) && item->valueint >= 0 && item->valueint <= 3900) {
+            config.local_xkc_threshold_mv = (uint16_t)item->valueint;
+        }
 
         item = cJSON_GetObjectItem(gc, "log_zigbee_only");
         if (cJSON_IsBool(item)) config.log_zigbee_only = cJSON_IsTrue(item);
