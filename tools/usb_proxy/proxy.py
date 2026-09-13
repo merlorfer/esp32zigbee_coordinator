@@ -363,6 +363,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
         data = file_path.read_bytes()
 
         if mime == "text/html":
+            # Set the usb-proxy marker as early as possible (right after <head>)
+            # so script.js -- which runs near the end of <body>, well before
+            # this file's own </body> injection point -- can already see it.
+            # A DOM query for the proxy-tools.js tag itself would not work here:
+            # classic <script> tags execute synchronously as the parser reaches
+            # them, so anything added later in the document (like the tag right
+            # before </body>) does not exist yet when script.js's top-level code
+            # runs.
+            marker = b'<head><script>window.__usbProxy = true;</script>'
+            if b"<head>" in data:
+                data = data.replace(b"<head>", marker, 1)
+
             inject = b'<script src="/proxy-tools.js"></script>\n</body>'
             if b"</body>" in data:
                 data = data.replace(b"</body>", inject, 1)
