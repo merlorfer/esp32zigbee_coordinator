@@ -173,7 +173,9 @@ static void on_button_short_press(void)
             if (gconfig.local_xkc_enabled) {
                 uint8_t gpio_l = gconfig.local_xkc_gpio_lower > 0 ? gconfig.local_xkc_gpio_lower : DEFAULT_XKC_GPIO_LOWER;
                 uint8_t gpio_u = gconfig.local_xkc_gpio_upper > 0 ? gconfig.local_xkc_gpio_upper : DEFAULT_XKC_GPIO_UPPER;
-                esp_err_t xkc_ret = local_xkc_sensor_start(gpio_l, gpio_u);
+                esp_err_t xkc_ret = local_xkc_sensor_start(gpio_l, gpio_u,
+                                                            gconfig.local_xkc_sense_mode,
+                                                            gconfig.local_xkc_threshold_mv);
                 if (xkc_ret == ESP_OK) {
                     ESP_LOGI(TAG, "Local XKC sensor started (GPIO %d/%d)", gpio_l, gpio_u);
                 } else {

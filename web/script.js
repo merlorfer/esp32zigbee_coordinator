@@ -1095,6 +1095,13 @@ function getTimePairs() {
 // Global Config
 // ============================================================================
 
+// Cached valid-GPIO lists per sense mode, so the mode selector can switch
+// the dropdown options instantly without a server round trip.
+let xkcValidGpiosDigital = [3, 4, 5, 6, 7, 10, 11, 14, 18, 19, 20, 21, 22, 23];
+let xkcValidGpiosAnalog = [3, 4, 5, 6];
+let xkcLastGpioLower = 4;
+let xkcLastGpioUpper = 5;
+
 async function loadGlobalConfig() {
     try {
         const data = await apiRequest('/api/config');
@@ -1119,22 +1126,51 @@ async function loadGlobalConfig() {
             document.getElementById('xkc-gpio-settings').classList.toggle('hidden', !xkcEnabled);
         }
 
+        if (data.valid_xkc_gpios_digital) xkcValidGpiosDigital = data.valid_xkc_gpios_digital;
+        if (data.valid_xkc_gpios_analog) xkcValidGpiosAnalog = data.valid_xkc_gpios_analog;
+
+        if (data.local_xkc_sense_mode !== undefined) {
+            document.getElementById('xkc-sense-mode').value = data.local_xkc_sense_mode;
+        }
+        if (data.local_xkc_threshold_mv !== undefined) {
+            document.getElementById('xkc-threshold-mv').value = data.local_xkc_threshold_mv;
+        }
+        document.getElementById('xkc-threshold-settings').classList.toggle(
+            'hidden', parseInt(document.getElementById('xkc-sense-mode').value) !== 1);
+
         // Populate GPIO dropdowns (only when XKC data is present)
         if (data.valid_xkc_gpios || data.local_xkc_gpio_lower !== undefined) {
-            const validGpios = data.valid_xkc_gpios || [3, 4, 5, 6, 7, 10, 11, 14, 18, 19, 20, 21, 22, 23];
-            populateGpioSelect('xkc-gpio-lower', validGpios, data.local_xkc_gpio_lower || 4);
-            populateGpioSelect('xkc-gpio-upper', validGpios, data.local_xkc_gpio_upper || 5);
+            xkcLastGpioLower = data.local_xkc_gpio_lower || xkcLastGpioLower;
+            xkcLastGpioUpper = data.local_xkc_gpio_upper || xkcLastGpioUpper;
+            renderXkcGpioOptions();
         }
     } catch (error) {
         console.error('Config load error:', error);
     }
 }
 
+function renderXkcGpioOptions() {
+    const mode = parseInt(document.getElementById('xkc-sense-mode').value);
+    const validGpios = mode === 1 ? xkcValidGpiosAnalog : xkcValidGpiosDigital;
+    populateGpioSelect('xkc-gpio-lower', validGpios, xkcLastGpioLower);
+    populateGpioSelect('xkc-gpio-upper', validGpios, xkcLastGpioUpper);
+}
+
 function populateGpioSelect(selectId, validPins, selectedPin) {
     const select = document.getElementById(selectId);
+    // If the currently remembered pin isn't valid for this list (e.g. after
+    // switching sense mode), fall back to the list's first entry so the
+    // select never silently keeps an invalid value.
+    const effectiveSelected = validPins.includes(selectedPin) ? selectedPin : validPins[0];
     select.innerHTML = validPins.map(pin =>
-        `<option value="${pin}"${pin === selectedPin ? ' selected' : ''}>GPIO ${pin}</option>`
+        `<option value="${pin}"${pin === effectiveSelected ? ' selected' : ''}>GPIO ${pin}</option>`
     ).join('');
+}
+
+function onXkcSenseModeChange() {
+    const mode = parseInt(document.getElementById('xkc-sense-mode').value);
+    document.getElementById('xkc-threshold-settings').classList.toggle('hidden', mode !== 1);
+    renderXkcGpioOptions();
 }
 
 function onXkcToggleChange() {
@@ -1168,10 +1204,12 @@ async function onRulesEnabledChange() {
 }
 
 async function saveGlobalConfig() {
-    const xkcEnabled = document.getElementById('xkc-enabled').checked;
-    const gpioLower  = parseInt(document.getElementById('xkc-gpio-lower').value);
-    const gpioUpper  = parseInt(document.getElementById('xkc-gpio-upper').value);
-    const zigbeeOnly = document.getElementById('log-zigbee-only').checked;
+    const xkcEnabled   = document.getElementById('xkc-enabled').checked;
+    const senseMode    = parseInt(document.getElementById('xkc-sense-mode').value);
+    const thresholdMv  = parseInt(document.getElementById('xkc-threshold-mv').value);
+    const gpioLower    = parseInt(document.getElementById('xkc-gpio-lower').value);
+    const gpioUpper    = parseInt(document.getElementById('xkc-gpio-upper').value);
+    const zigbeeOnly   = document.getElementById('log-zigbee-only').checked;
 
     if (xkcEnabled && gpioLower === gpioUpper) {
         showToast('Az also es felso szenzor nem lehet ugyanaz a GPIO lab!', true);
@@ -1182,11 +1220,13 @@ async function saveGlobalConfig() {
 
     try {
         const data = await apiRequest('/api/config', 'POST', {
-            local_xkc_enabled:    xkcEnabled,
-            local_xkc_gpio_lower: gpioLower,
-            local_xkc_gpio_upper: gpioUpper,
-            log_zigbee_only:      zigbeeOnly,
-            serial_interface:     serialIface,
+            local_xkc_enabled:      xkcEnabled,
+            local_xkc_sense_mode:   senseMode,
+            local_xkc_threshold_mv: thresholdMv,
+            local_xkc_gpio_lower:   gpioLower,
+            local_xkc_gpio_upper:   gpioUpper,
+            log_zigbee_only:        zigbeeOnly,
+            serial_interface:       serialIface,
         });
         if (data.success || data.status === 'ok') {
             if (data.reboot_required) {

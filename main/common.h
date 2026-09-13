@@ -33,6 +33,10 @@ extern "C" {
 #define DEFAULT_XKC_GPIO_LOWER  4                       // Default GPIO for lower sensor
 #define DEFAULT_XKC_GPIO_UPPER  5                       // Default GPIO for upper sensor
 
+#define XKC_SENSE_MODE_DIGITAL  0   // Plain GPIO input (gpio_get_level), pull-down enabled
+#define XKC_SENSE_MODE_ANALOG   1   // ADC read + software voltage threshold (no level shifter yet)
+#define DEFAULT_XKC_THRESHOLD_MV 1500  // Analog mode: mV at/above which a channel reads as "high"
+
 /* ============================================================================
  * Wi-Fi Configuration
  * ============================================================================ */
@@ -259,6 +263,12 @@ typedef struct {
     bool log_zigbee_only;          // If true: BLE/WiFi log tags silenced (ESP_LOG_NONE)
     bool rules_enabled;            // If false: rules engine events are suppressed
     uint8_t serial_interface;      // 0 = USB Serial JTAG (default), 1 = UART0 (GPIO21/20)
+
+    // Local XKC sensor: analog fallback mode (interim, until a level shifter is
+    // installed) -- appended at the end so existing NVS blobs still load
+    // cleanly (see nvs_manager.c's size-tolerant load).
+    uint8_t local_xkc_sense_mode;      // XKC_SENSE_MODE_DIGITAL or XKC_SENSE_MODE_ANALOG
+    uint16_t local_xkc_threshold_mv;   // Analog mode threshold in mV (0 = use DEFAULT_XKC_THRESHOLD_MV)
 } global_config_t;
 
 /**
