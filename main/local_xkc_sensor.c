@@ -113,13 +113,6 @@ static void xkc_timer_callback(void *arg)
     }
 
     if (should_send) {
-        if (value_changed) {
-            ESP_LOGI(TAG, "Water level changed: %d -> %d", s_last_level, level);
-        }
-
-        s_last_level = level;
-        s_last_send_time = now;
-
         sensor_data_msg_t msg = {
             .ieee_addr = LOCAL_XKC_IEEE_ADDR,
             .endpoint = LOCAL_XKC_ENDPOINT,
@@ -127,7 +120,21 @@ static void xkc_timer_callback(void *arg)
             .raw_value = level,
             .timestamp = now,
         };
-        xQueueSend(g_sensor_data_queue, &msg, 0);  // Non-blocking
+
+        // Only advance our own state once the message actually made it into
+        // the queue. If the queue is full (e.g. the scheduler is stalled
+        // waiting on the RTC), leave s_last_level/s_last_send_time alone so
+        // this same reading is retried on the next tick instead of being
+        // silently considered "sent" and lost for good.
+        if (xQueueSend(g_sensor_data_queue, &msg, 0) == pdTRUE) {
+            if (value_changed) {
+                ESP_LOGI(TAG, "Water level changed: %d -> %d", s_last_level, level);
+            }
+            s_last_level = level;
+            s_last_send_time = now;
+        } else {
+            ESP_LOGW(TAG, "Failed to queue sensor data (queue full) - will retry next tick");
+        }
     }
 }
 
