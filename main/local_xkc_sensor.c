@@ -47,6 +47,8 @@ static uint8_t s_sense_mode = XKC_SENSE_MODE_DIGITAL;
 static uint16_t s_threshold_mv = DEFAULT_XKC_THRESHOLD_MV;
 static bool s_active = false;
 static uint32_t s_last_send_time = 0;       // Last time data was sent to queue
+static int s_last_mv_lower = 0;             // Analog mode: last measured voltage (mV), for logging
+static int s_last_mv_upper = 0;
 
 /* Analog mode ADC state */
 static adc_oneshot_unit_handle_t s_adc_handle = NULL;
@@ -162,6 +164,8 @@ static int16_t read_water_level(void)
     if (s_sense_mode == XKC_SENSE_MODE_ANALOG) {
         int mv_lower = read_channel_mv(s_adc_ch_lower, s_adc_cali_lower);
         int mv_upper = read_channel_mv(s_adc_ch_upper, s_adc_cali_upper);
+        s_last_mv_lower = mv_lower;
+        s_last_mv_upper = mv_upper;
         lower = (mv_lower >= s_threshold_mv) ? 1 : 0;
         upper = (mv_upper >= s_threshold_mv) ? 1 : 0;
     } else {
@@ -231,7 +235,11 @@ static void xkc_timer_callback(void *arg)
         // this same reading is retried on the next tick instead of being
         // silently considered "sent" and lost for good.
         if (xQueueSend(g_sensor_data_queue, &msg, 0) == pdTRUE) {
-            if (value_changed) {
+            if (s_sense_mode == XKC_SENSE_MODE_ANALOG) {
+                ESP_LOGI(TAG, "Water level: %d (lower=%dmV upper=%dmV, threshold=%dmV) [%s]",
+                         level, s_last_mv_lower, s_last_mv_upper, s_threshold_mv,
+                         value_changed ? "changed" : "keepalive");
+            } else if (value_changed) {
                 ESP_LOGI(TAG, "Water level changed: %d -> %d", s_last_level, level);
             }
             s_last_level = level;
