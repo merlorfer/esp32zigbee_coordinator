@@ -262,7 +262,7 @@ typedef struct {
 
     bool log_zigbee_only;          // If true: BLE/WiFi log tags silenced (ESP_LOG_NONE)
     bool rules_enabled;            // If false: rules engine events are suppressed
-    uint8_t serial_interface;      // 0 = USB Serial JTAG (default), 1 = UART0 (GPIO21/20)
+    uint8_t serial_interface;      // 0 = USB Serial JTAG (default), 1 = UART0 (GPIO16/17)
 
     // Local XKC sensor: analog fallback mode (interim, until a level shifter is
     // installed) -- appended at the end so existing NVS blobs still load

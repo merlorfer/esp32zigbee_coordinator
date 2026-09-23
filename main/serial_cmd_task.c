@@ -16,8 +16,8 @@
 
 #define SERIAL_UART_NUM      UART_NUM_0
 #define SERIAL_UART_BAUD     115200
-#define SERIAL_UART_TX_PIN   21      // U0TXD — no conflict with GPIO9 (btn) or GPIO15 (led)
-#define SERIAL_UART_RX_PIN   20      // U0RXD
+#define SERIAL_UART_TX_PIN   16      // no conflict with GPIO9 (btn), GPIO15 (led), or the XKC valid-GPIO lists
+#define SERIAL_UART_RX_PIN   17
 
 static bool s_use_uart = false;
 
