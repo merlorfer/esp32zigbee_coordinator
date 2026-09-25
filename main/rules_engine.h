@@ -93,6 +93,9 @@ typedef struct {
     uint8_t event_param;
     uint16_t event_time;          // HH*60+MM for EVT_TIME
 
+    rule_action_t pre_actions[MAX_RULE_ACTIONS];   // actions before "if" (always run)
+    uint8_t pre_count;
+
     bool has_condition;
     rule_condition_t conditions[MAX_CONDITIONS];
     uint8_t condition_count;

@@ -227,6 +227,31 @@ el ujra a szabalyok szoveget valtoztatas nelkul is (webUI "Szabalyok"
 mentes gomb, vagy `POST /api/rules`) -- ez ujra feloldja az osszes
 eszkoz-indexet a friss eszkozlistahoz.
 
+### 9. Az `if` ELOTT allo akciosorok feltetel nelkul futnak
+
+Egy `on ... do` blokkban az `if` ELE irt akciosorok (pl. egy `set`) az
+`endif` UTANI, mindig-lefuto akciokhoz (lasd feljebb) hasonloan,
+**feltetel nelkul, minden triggerkor lefutnak** -- meg mielott a motor
+kiertekelne az `if` feltetelt. Ez lehetove teszi, hogy egy segedvaltozot
+frissen szamitsatok ki, majd kozvetlenul utana, UGYANABBAN a blokkban
+dontsetek a friss ertek alapjan:
+
+```
+on HumiditySensor10 do
+  set var5 [HumiditySensor10] - [HumiditySensor16]   // mindig lefut
+  if [var5] > 3
+    on Dehumidifier
+  else
+    off Dehumidifier
+  endif
+endon
+```
+
+Igy nem szukseges a dontesi logikat kulon "szamitas" es "vegrehajtas"
+szabalyra szetszedni -- bar az a minta (lasd "Pelda: if / else
+hasznalata" resz) tovabbra is ervenyes es hasznos, ha tobb esemeny
+(pl. ket kulonbozo erzekelo) is trigger elheti ugyanazt a szamitast.
+
 ---
 
 ## Pelda: Ontozes idoablakkal
