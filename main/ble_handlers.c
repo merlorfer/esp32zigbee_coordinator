@@ -492,15 +492,30 @@ static char *handle_set_device_config(cJSON *params)
     // Check for device_type to disambiguate multi-endpoint sensors
     device_config_t dev;
     cJSON *dtype_obj = cJSON_GetObjectItem(params, "device_type");
+    device_type_t dtype = DEVICE_TYPE_ON_OFF_LIGHT;
+    bool have_dtype = cJSON_IsString(dtype_obj);
+    if (have_dtype) {
+        dtype = sensor_type_from_string(dtype_obj->valuestring);
+    }
+
     bool found = false;
-    // Prefer explicit endpoint lookup (multi-endpoint devices like power strips)
     cJSON *ep_obj = cJSON_GetObjectItem(params, "endpoint");
-    if (cJSON_IsNumber(ep_obj)) {
+
+    // Sensors are uniquely identified by (ieee_addr, device_type) even when
+    // several sensor clusters share one endpoint (e.g. a combined
+    // temperature + humidity device) -- endpoint alone is ambiguous there
+    // and would match whichever of the two was added first, silently
+    // overwriting the wrong one. Endpoint stays the right disambiguator for
+    // non-sensor devices (multi-outlet power strips: same device_type,
+    // different endpoints).
+    if (have_dtype && is_sensor_device(dtype)) {
+        found = (device_manager_get_by_type(ieee_addr, dtype, &dev) == ESP_OK);
+    }
+    if (!found && cJSON_IsNumber(ep_obj)) {
         uint8_t ep = (uint8_t)ep_obj->valuedouble;
         found = (device_manager_find_by_ieee_and_endpoint(ieee_addr, ep, &dev) == ESP_OK);
     }
-    if (!found && cJSON_IsString(dtype_obj)) {
-        device_type_t dtype = sensor_type_from_string(dtype_obj->valuestring);
+    if (!found && have_dtype) {
         found = (device_manager_get_by_type(ieee_addr, dtype, &dev) == ESP_OK);
     }
     if (!found) {
@@ -536,7 +551,10 @@ static char *handle_set_device_config(cJSON *params)
     // Update fields if present
     bool sensor_updated = apply_device_fields_from_json(params, &dev);
 
-    if (cJSON_IsNumber(ep_obj)) {
+    if (is_sensor_device(dev.device_type)) {
+        // Sensors: always key by type, never by the (possibly shared) endpoint.
+        device_manager_update_by_type(ieee_addr, dev.device_type, &dev);
+    } else if (cJSON_IsNumber(ep_obj)) {
         device_manager_update_by_endpoint(ieee_addr, dev.endpoint, &dev);
     } else {
         device_manager_update_by_type(ieee_addr, dev.device_type, &dev);
