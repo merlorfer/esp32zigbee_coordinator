@@ -200,6 +200,33 @@ es az ujra modositja `var1`-et, az ismet triggerelohet.
 A motor max 3 szintu rekurziot enged, utana leall
 (vegtelen hurok vedelem).
 
+### 8. Eszkoz torles/ujraparositas utan mentsd ujra a szabalyokat
+
+A `[EszkozNev]` hivatkozas es az `on EszkozNev do` trigger a szabalyok
+BETOLTESEKOR (parse-kor) egyetlen fix eszkoz-indexre keperzodik le, es
+ez az index a szabalyba "beeg" -- nem nezi meg ujra az eszkoz nevet
+minden futaskor.
+
+Ha kesobb egy, a listaban KORABBAN allo eszkozt torolnek (vagy
+ujraparositanak), a mogotte allo eszkozok indexe eggyel lejjebb
+csuszik -- de a mar betoltott szabaly meg a regi indexre mutat. Ennek
+kovetkezmenye:
+
+- a trigger (`on EszkozNev do`) tobbe NEM fut le az adott eszkoz uj
+  mereseire (az esemeny indexe mar nem egyezik a szabalyban targoltval),
+- a `[EszkozNev]` hivatkozas egy MASIK (vagy elavult) eszkoz erteket
+  olvashatja.
+
+**Tunet**: egy erzekelo erteke lathatoan valtozik a webUI-n, de a
+belole szamolt valtozo (pl. `set varX [EszkozNev] - [MasikEszkoz]`)
+nem frissul, es a szabalyhoz tartozo "Rule action: ..." logsor sem
+jelenik meg tobbet.
+
+**Megoldas**: barmilyen eszkoz torlese vagy ujraparositasa UTAN mentsd
+el ujra a szabalyok szoveget valtoztatas nelkul is (webUI "Szabalyok"
+mentes gomb, vagy `POST /api/rules`) -- ez ujra feloldja az osszes
+eszkoz-indexet a friss eszkozlistahoz.
+
 ---
 
 ## Pelda: Ontozes idoablakkal
