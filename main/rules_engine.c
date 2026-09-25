@@ -625,6 +625,14 @@ static esp_err_t parse_rules(const char *text)
                     return ESP_ERR_INVALID_ARG;
                 }
                 cur->post_actions[cur->post_count++] = act;
+            } else if (state == STATE_IN_RULE) {
+                // Before any "if" in this block - runs unconditionally, like post_actions
+                if (cur->pre_count >= MAX_RULE_ACTIONS) {
+                    snprintf(s_parse_error, sizeof(s_parse_error),
+                             "Line %d: max %d pre-if actions exceeded", line_num, MAX_RULE_ACTIONS);
+                    return ESP_ERR_INVALID_ARG;
+                }
+                cur->pre_actions[cur->pre_count++] = act;
             } else {
                 if (cur->then_count >= MAX_RULE_ACTIONS) {
                     snprintf(s_parse_error, sizeof(s_parse_error),
@@ -833,6 +841,7 @@ static void rules_engine_on_var_changed(uint8_t var_index)
     for (uint8_t i = 0; i < s_rule_count; i++) {
         rule_t *rule = &s_rules[i];
         if (rule->event_type == EVT_VAR_CHANGED && rule->event_param == var_index) {
+            execute_actions(rule->pre_actions, rule->pre_count);
             if (eval_conditions(rule)) {
                 execute_actions(rule->then_actions, rule->then_count);
             } else {
@@ -876,6 +885,7 @@ static void process_event(rule_event_type_t event_type, uint8_t param, uint16_t 
         }
 
         if (match) {
+            execute_actions(rule->pre_actions, rule->pre_count);
             if (eval_conditions(rule)) {
                 execute_actions(rule->then_actions, rule->then_count);
             } else {
