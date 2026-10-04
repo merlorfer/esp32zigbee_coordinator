@@ -235,12 +235,13 @@ static void xkc_timer_callback(void *arg)
         // this same reading is retried on the next tick instead of being
         // silently considered "sent" and lost for good.
         if (xQueueSend(g_sensor_data_queue, &msg, 0) == pdTRUE) {
-            if (s_sense_mode == XKC_SENSE_MODE_ANALOG) {
-                ESP_LOGI(TAG, "Water level: %d (lower=%dmV upper=%dmV, threshold=%dmV) [%s]",
-                         level, s_last_mv_lower, s_last_mv_upper, s_threshold_mv,
-                         value_changed ? "changed" : "keepalive");
-            } else if (value_changed) {
-                ESP_LOGI(TAG, "Water level changed: %d -> %d", s_last_level, level);
+            if (value_changed) {
+                if (s_sense_mode == XKC_SENSE_MODE_ANALOG) {
+                    ESP_LOGI(TAG, "Water level changed: %d -> %d (lower=%dmV upper=%dmV, threshold=%dmV)",
+                             s_last_level, level, s_last_mv_lower, s_last_mv_upper, s_threshold_mv);
+                } else {
+                    ESP_LOGI(TAG, "Water level changed: %d -> %d", s_last_level, level);
+                }
             }
             s_last_level = level;
             s_last_send_time = now;
