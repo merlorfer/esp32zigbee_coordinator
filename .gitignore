@@ -38,3 +38,6 @@ dependencies.lock
 
 # Test project
 test_sensor_config/
+
+# Self-signed TLS cert/key for the webUI HTTPS bridge (machine-specific, regenerated via gen_cert.sh)
+tools/webui_https_server/certs/
