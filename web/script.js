@@ -12,6 +12,18 @@ let espTimeOffset = 0;
 let espTimeInitialized = false;
 let zigbeeActive = false;
 
+// True when this page is being served through the USB-serial proxy
+// (tools/usb_proxy/proxy.py) rather than the device's own WiFi AP. Unlike
+// the native WiFi AP -- which genuinely goes unreachable once Zigbee
+// operational mode turns WiFi off -- the proxy keeps working over the
+// serial link regardless of wifi_active, so it must not be treated as a
+// disconnect the way "no BLE, no WiFi" always meant before the proxy existed.
+// (Set via an inline marker the proxy injects right after <head>, executed
+// before this script -- a DOM query for the proxy's own <script> tag would
+// not work here since that tag is injected right before </body>, i.e. after
+// this file has already run.)
+const isUsbProxy = !!window.__usbProxy;
+
 // BLE State
 let bleGateway = null;
 let bleConnected = false;
@@ -166,9 +178,9 @@ function updateBLEStatus(connected, statusMessage) {
 function updateControlButtons() {
     const pairingBtn = document.getElementById('pairing-btn');
     if (pairingBtn) {
-        const canPair = bleConnected && zigbeeActive;
+        const canPair = (bleConnected || isUsbProxy) && zigbeeActive;
         pairingBtn.disabled = !canPair;
-        pairingBtn.title = canPair ? '' : 'Csak Zigbee uzemmodban elerheto (BLE kapcsolat szukseges)';
+        pairingBtn.title = canPair ? '' : 'Csak Zigbee uzemmodban elerheto (BLE kapcsolat vagy USB proxy szukseges)';
     }
 
     // Update sticky BLE status bar
@@ -423,8 +435,10 @@ async function loadStatus() {
         zigbeeActive = !!data.zigbee_active;
         updateControlButtons();
 
-        // Ha WiFi mód nem aktív (átváltott Zigbee módba), leállítjuk a HTTP pollingot
-        if (!data.wifi_active && !bleConnected) {
+        // Ha WiFi mód nem aktív (átváltott Zigbee módba), leállítjuk a HTTP pollingot --
+        // kiveve ha USB proxy-n keresztül érjük el az oldalt, mert az a soros
+        // kapcsolaton át WiFi nélkül is működik.
+        if (!data.wifi_active && !bleConnected && !isUsbProxy) {
             clearInterval(statusInterval);  statusInterval = null;
             clearInterval(devicesInterval); devicesInterval = null;
             clearInterval(logsInterval);    logsInterval = null;
@@ -612,8 +626,8 @@ function getSensorControlInfo(ieeeAddr) {
 function renderOnOffCard(device) {
     const sensorControllers = getSensorControlInfo(device.ieee_addr);
     const isSensorControlled = sensorControllers.length > 0;
-    const canControl = bleConnected && zigbeeActive;
-    const ctrlDisabled = canControl ? '' : 'disabled title="Csak BLE+Zigbee uzemmodban elerheto"';
+    const canControl = (bleConnected || isUsbProxy) && zigbeeActive;
+    const ctrlDisabled = canControl ? '' : 'disabled title="Csak BLE+Zigbee uzemmodban vagy USB proxy-n keresztul elerheto"';
 
     // Build status badge
     let statusBadge = '';
