@@ -44,7 +44,8 @@ self.addEventListener('activate', event => {
     );
 });
 
-// Fetch event - serve from cache, fallback to network
+// Fetch event - network first (so UI updates are picked up immediately
+// whenever the device is reachable), fall back to cache only when offline
 self.addEventListener('fetch', event => {
     // API requests must never be cached - always go to network
     if (event.request.url.includes('/api/')) {
@@ -53,32 +54,22 @@ self.addEventListener('fetch', event => {
     }
 
     event.respondWith(
-        caches.match(event.request)
+        fetch(event.request)
             .then(response => {
-                // Cache hit - return cached response
-                if (response) {
+                // Check if valid response
+                if (!response || response.status !== 200 || response.type !== 'basic') {
                     return response;
                 }
 
-                // Clone the request
-                const fetchRequest = event.request.clone();
+                // Clone the response and refresh the cache for offline fallback
+                const responseToCache = response.clone();
+                caches.open(CACHE_NAME)
+                    .then(cache => {
+                        cache.put(event.request, responseToCache);
+                    });
 
-                return fetch(fetchRequest).then(response => {
-                    // Check if valid response
-                    if (!response || response.status !== 200 || response.type !== 'basic') {
-                        return response;
-                    }
-
-                    // Clone the response
-                    const responseToCache = response.clone();
-
-                    caches.open(CACHE_NAME)
-                        .then(cache => {
-                            cache.put(event.request, responseToCache);
-                        });
-
-                    return response;
-                });
+                return response;
             })
+            .catch(() => caches.match(event.request))
     );
 });
