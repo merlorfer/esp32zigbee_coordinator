@@ -23,6 +23,7 @@ extern "C" {
 #define MAX_RULE_TIMERS     8
 #define MAX_RULE_VARIABLES  8
 #define MAX_RULES_TEXT_SIZE 4096
+#define MAX_RULE_LOG_TEXT_LEN 26  // 25 chars + NUL
 
 /* ============================================================================
  * Enumerations
@@ -56,6 +57,7 @@ typedef enum {
     ACT_TIMER_SET,
     ACT_TIMER_CANCEL,
     ACT_SET_VAR,
+    ACT_LOG_ERROR,
 } rule_action_type_t;
 
 /* ============================================================================
@@ -86,6 +88,7 @@ typedef struct {
     rule_value_t expr_left;
     int8_t expr_op;           // 0=none (use value), '+'=add, '-'=subtract
     rule_value_t expr_right;
+    char log_text[MAX_RULE_LOG_TEXT_LEN];  // for ACT_LOG_ERROR
 } rule_action_t;
 
 typedef struct {

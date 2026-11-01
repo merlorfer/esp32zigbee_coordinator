@@ -114,6 +114,33 @@ Valtozo ertekmodositaskor `on var<N> do` esemeny triggerel.
 **Persist konfiguracio:** Minden valtozo konfiguralhato, hogy ujrainditas utan
 megorizze az erteket, vagy alapertekre alljon vissza (lasd lent).
 
+### Log uzenet (hibakereseshez)
+
+```
+log "Vizszint kritikusan alacsony"
+```
+
+Egyedi szoveget ir a naplóba ERROR szinten (`RULES_ENGINE` taggel, tehat
+azonnal latszik, hogy a rules engine irta) -- a webUI/soros naplo-nezetben
+(`/api/logs/live`, `/api/logs/history`) ugyanugy megjelenik, mint minden
+mas log sor.
+
+**Formazasi szabalyok:**
+- A szoveget **idezojelek kozott** kell megadni (`"..."`) -- enelkul a
+  parser hibat ad ("expected opening '\"'").
+- Max. **25 karakter**. Ha hosszabb, a mentes **hibat ad** (nem csonkolja
+  csendben): `"Line N: text exceeds 25 characters"`.
+- Lezaro idezojel nelkul ("log "elfelejtett vege) is hibat ad.
+
+```
+log "Ez egy hosszu, szoveg"       // HIBAS, ha tobb mint 25 karakter
+on HumiditySensor10 do
+  if [HumiditySensor10] > 80
+    log "Paratartalom tul magas"
+  endif
+endon
+```
+
 ### Komment
 
 ```
@@ -182,6 +209,7 @@ if [Temperature] < 18 and [hour] >= 6 and [var1] = 1
 | Timerek | 8 (timer 1..8) |
 | Valtozok | 8 (var1..var8) |
 | Szabaly szoveg osszmerete | 2048 byte |
+| `log` uzenet hossza | 25 karakter (tulllepes = mentesi hiba) |
 
 ### 6. Kis- es nagybetu
 

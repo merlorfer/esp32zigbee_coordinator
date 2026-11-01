@@ -90,6 +90,42 @@ static bool parse_number(const char **p, float *out)
     return true;
 }
 
+// Parses a "double-quoted" string into out (max_len includes NUL).
+// Unlike parse_word, this allows spaces inside the quotes. Fails with a
+// parse error (not silent truncation) if there's no opening/closing quote
+// or the content is longer than the buffer can hold.
+static bool parse_quoted_string(const char **p, char *out, size_t max_len, int line_num)
+{
+    skip_whitespace(p);
+    if (**p != '"') {
+        snprintf(s_parse_error, sizeof(s_parse_error),
+                 "Line %d: expected opening '\"'", line_num);
+        return false;
+    }
+    (*p)++;
+
+    size_t i = 0;
+    while (**p && **p != '"' && **p != '\n' && **p != '\r') {
+        if (i >= max_len - 1) {
+            snprintf(s_parse_error, sizeof(s_parse_error),
+                     "Line %d: text exceeds %d characters", line_num, (int)max_len - 1);
+            return false;
+        }
+        out[i++] = **p;
+        (*p)++;
+    }
+
+    if (**p != '"') {
+        snprintf(s_parse_error, sizeof(s_parse_error),
+                 "Line %d: missing closing '\"'", line_num);
+        return false;
+    }
+    (*p)++;
+
+    out[i] = '\0';
+    return true;
+}
+
 static bool strcasecmp_word(const char *a, const char *b)
 {
     while (*a && *b) {
@@ -367,6 +403,14 @@ static bool parse_action(const char *line, rule_action_t *act, int line_num)
         // For simple literals with no operator, also store in value for backward compat
         if (act->expr_op == 0 && act->expr_left.type == VAL_LITERAL) {
             act->value = act->expr_left.literal;
+        }
+        return true;
+    }
+
+    if (strcasecmp_word(word, "log")) {
+        act->type = ACT_LOG_ERROR;
+        if (!parse_quoted_string(&p, act->log_text, sizeof(act->log_text), line_num)) {
+            return false;
         }
         return true;
     }
@@ -815,6 +859,10 @@ static void execute_action(const rule_action_t *act)
                     rules_engine_on_var_changed(act->target_index);
                 }
             }
+            break;
+
+        case ACT_LOG_ERROR:
+            ESP_LOGE(TAG, "Rule log: %s", act->log_text);
             break;
     }
 }
