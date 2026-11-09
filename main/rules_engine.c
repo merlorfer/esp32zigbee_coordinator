@@ -1053,6 +1053,27 @@ const char* rules_engine_get_text(void)
     return s_rules_text;
 }
 
+void rules_engine_reparse(void)
+{
+    // Parsed rules hold device_manager array indices; they go stale whenever
+    // the device list is reshuffled (removal compacts the array), so rebuild
+    // them -- and the index-keyed sensor value cache -- from the current text.
+    memset(s_sensor_values, 0, sizeof(s_sensor_values));
+    uint8_t count = device_manager_get_count();
+    for (uint8_t i = 0; i < count && i < MAX_DEVICES; i++) {
+        device_config_t dev;
+        if (device_manager_get_by_index(i, &dev) == ESP_OK && dev.reading.valid) {
+            s_sensor_values[i] = dev.reading.converted_value;
+        }
+    }
+
+    if (parse_rules(s_rules_text) != ESP_OK) {
+        ESP_LOGW(TAG, "Rules reparse after device change failed: %s", s_parse_error);
+    } else {
+        ESP_LOGI(TAG, "Rules reparsed after device change (%d rules)", s_rule_count);
+    }
+}
+
 esp_err_t rules_engine_save(void)
 {
     esp_err_t ret = nvs_save_rules_text(s_rules_text, strlen(s_rules_text));

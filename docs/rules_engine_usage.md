@@ -228,32 +228,27 @@ es az ujra modositja `var1`-et, az ismet triggerelohet.
 A motor max 3 szintu rekurziot enged, utana leall
 (vegtelen hurok vedelem).
 
-### 8. Eszkoz torles/ujraparositas utan mentsd ujra a szabalyokat
+### 8. Eszkoz torlese utan a szabalyok automatikusan frissulnek
 
 A `[EszkozNev]` hivatkozas es az `on EszkozNev do` trigger a szabalyok
-BETOLTESEKOR (parse-kor) egyetlen fix eszkoz-indexre keperzodik le, es
-ez az index a szabalyba "beeg" -- nem nezi meg ujra az eszkoz nevet
-minden futaskor.
+parse-kor egy eszkoz-indexre keperzodik le, es ez az index a
+szabalyba "beeg". Egy eszkoz torlesekor a mogotte allo eszkozok indexe
+lejjebb csuszik.
 
-Ha kesobb egy, a listaban KORABBAN allo eszkozt torolnek (vagy
-ujraparositanak), a mogotte allo eszkozok indexe eggyel lejjebb
-csuszik -- de a mar betoltott szabaly meg a regi indexre mutat. Ennek
-kovetkezmenye:
+A firmware ezert **minden eszkoztorles utan automatikusan ujraparse-olja
+az aktualis szabaly-szoveget** (es az eszkoz-lista importalasa utan is),
+tehat NEM kell kezzel ujra menteni a szabalyokat. A naplo ezt jelzi:
+`Rules reparsed after device change (N rules)`.
 
-- a trigger (`on EszkozNev do`) tobbe NEM fut le az adott eszkoz uj
-  mereseire (az esemeny indexe mar nem egyezik a szabalyban targoltval),
-- a `[EszkozNev]` hivatkozas egy MASIK (vagy elavult) eszkoz erteket
-  olvashatja.
+**Ha a torolt eszkozre hivatkozik valamelyik szabaly**, az ujraparse
+hibaval all meg azon a szabalyon (`Rules reparse after device change
+failed: Line N: unknown device 'Nev'`), es a *megelozo* szabalyok futnak
+tovabb. Ilyenkor a szabaly-szovegben ki kell javitani/torolni a
+hivatkozast, es ujra menteni.
 
-**Tunet**: egy erzekelo erteke lathatoan valtozik a webUI-n, de a
-belole szamolt valtozo (pl. `set varX [EszkozNev] - [MasikEszkoz]`)
-nem frissul, es a szabalyhoz tartozo "Rule action: ..." logsor sem
-jelenik meg tobbet.
-
-**Megoldas**: barmilyen eszkoz torlese vagy ujraparositasa UTAN mentsd
-el ujra a szabalyok szoveget valtoztatas nelkul is (webUI "Szabalyok"
-mentes gomb, vagy `POST /api/rules`) -- ez ujra feloldja az osszes
-eszkoz-indexet a friss eszkozlistahoz.
+(Ez a viselkedes csak a firmware-nek ezt a verziojatol van meg. Regebbi
+firmware-en torles utan a trigger elveszhetett, es a `[EszkozNev]` egy
+masik eszkoz erteket olvashatta -- ott kezzel kellett ujra menteni.)
 
 ### 9. Az `if` ELOTT allo akciosorok feltetel nelkul futnak
 

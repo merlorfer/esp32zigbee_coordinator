@@ -120,8 +120,9 @@ Ket erzekelesi mod kozul lehet valasztani a globalis beallitasokban:
 A log csak **valtozaskor** ir (nincs ismetlodo "keepalive" szemetelés
 a naploban, sem digitalis, sem analog modban).
 
-**Ismert buktato** (eszkoz-index eltolodas torles/ujraparositas utan,
-tunetek es megoldas): lasd **[rules_engine_usage.md, 8. pont](rules_engine_usage.md#8-eszkoz-torlesujraparositas-utan-mentsd-ujra-a-szabalyokat)**.
+**Eszkoz torlese a szabalyok mellett**: a szabalyok automatikusan
+ujraparse-olodnak, kezi ujramentes nem kell — reszletek:
+**[rules_engine_usage.md, 8. pont](rules_engine_usage.md#8-eszkoz-torlese-utan-a-szabalyok-automatikusan-frissulnek)**.
 
 ---
 

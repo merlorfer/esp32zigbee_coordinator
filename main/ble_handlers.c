@@ -1551,6 +1551,8 @@ static char *handle_import_config(cJSON *params)
             devices_imported++;
         }
         device_manager_save_all();
+        // Already-stored rules may reference devices that only exist now
+        rules_engine_reparse();
     }
 
     // Rule variables (persist flag + default + current value)

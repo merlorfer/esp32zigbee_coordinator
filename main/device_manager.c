@@ -6,6 +6,7 @@
 #include "device_manager.h"
 #include "sensor_types.h"
 #include "nvs_manager.h"
+#include "rules_engine.h"
 #include "nvs.h"
 #include "esp_log.h"
 #include <string.h>
@@ -203,6 +204,10 @@ esp_err_t device_manager_remove(uint64_t ieee_addr)
 
     ESP_LOGI(TAG, "Removed %d device(s) with IEEE addr, %d devices remaining",
              removed, s_device_count);
+
+    // Later devices shifted down; rules cache device indices, so refresh them
+    // (after releasing the mutex -- parsing calls back into the device manager)
+    rules_engine_reparse();
     return ESP_OK;
 }
 

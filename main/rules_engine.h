@@ -131,6 +131,7 @@ typedef struct {
 esp_err_t rules_engine_init(void);
 esp_err_t rules_engine_load_text(const char *text);
 const char* rules_engine_get_text(void);
+void rules_engine_reparse(void);  // re-resolve device names -> indices after the device list changed
 esp_err_t rules_engine_save(void);
 
 void rules_engine_on_sensor_data(uint8_t device_index, float value);
